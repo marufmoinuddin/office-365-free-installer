@@ -1,5 +1,3 @@
-Made by TiTAN1UM...
-
 #To Install Office:
  Run "Install (Run as admin).cmd" as administrator and input your option.
 
