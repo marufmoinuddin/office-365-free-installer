@@ -20,13 +20,19 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Playwright
+      - name: Install Camoufox
         run: |
-          pip install playwright
-          python -m playwright install --with-deps chromium
+          pip install camoufox
+          python -m camoufox fetch
 
-      - name: Scrape latest ODT URL
+      - name: Scrape latest ODT URL (Camoufox)
+        id: scrape
+        continue-on-error: true
         run: python .github/scripts/scrape-odt.py
+
+      - name: Fallback - GitHub code search
+        if: steps.scrape.outcome == 'failure'
+        run: python .github/scripts/find-odt-url.py
 
       - name: Commit updated URL
         run: |

@@ -1,45 +1,74 @@
 #!/usr/bin/env python3
 """Scrape the latest Office Deployment Tool (ODT) download URL from Microsoft.
 
-The Microsoft Download Center page is bot-protected for plain HTTP clients,
-so we render it with a headless browser (Playwright) and extract the direct
-download.microsoft.com link. The result is written to tools/odt-url.txt.
+Uses Camoufox (a stealth Firefox build) to render the bot-protected Microsoft
+Download Center page and extract the direct download.microsoft.com link.
+Writes the result to tools/odt-url.txt.
 """
 import re
 import sys
-from playwright.sync_api import sync_playwright
+from camoufox.sync_api import Camoufox
 
 PAGE_URL = "https://www.microsoft.com/en-us/download/details.aspx?id=49117"
 OUT_FILE = "tools/odt-url.txt"
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+URL_RE = re.compile(
+    r'https://download\.microsoft\.com/[^"\'<>\s]*officedeploymenttool[^"\'<>\s]*\.exe'
+)
 
 
 def main() -> int:
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(user_agent=UA)
-        page.goto(PAGE_URL, wait_until="networkidle", timeout=90000)
-        page.wait_for_timeout(3000)  # let any lazy-loaded links render
-        html = page.content()
-        browser.close()
+    with Camoufox(headless=True) as browser:
+        page = browser.new_page()
 
-    # Prefer the ODT-specific filename, then any download.microsoft.com .exe
-    patterns = [
-        r'https://download\.microsoft\.com/[^"\'<>\s]*officedeploymenttool[^"\'<>\s]*\.exe',
-        r'https://download\.microsoft\.com/[^"\'<>\s]*\.exe',
-    ]
-    for pat in patterns:
-        m = re.search(pat, html)
+        found = {"url": None}
+
+        def on_response(response):
+            if found["url"]:
+                return
+            try:
+                body = response.text()
+            except Exception:
+                return
+            m = URL_RE.search(body)
+            if m:
+                found["url"] = m.group(0)
+
+        page.on("response", on_response)
+
+        page.goto(PAGE_URL, wait_until="domcontentloaded", timeout=90000)
+        page.wait_for_timeout(8000)  # let lazy-loaded content render
+
+        print(f"DEBUG: title={page.title()!r}", file=sys.stderr)
+
+        # 1) Rendered HTML
+        url = None
+        m = URL_RE.search(page.content())
         if m:
             url = m.group(0)
-            with open(OUT_FILE, "w") as f:
-                f.write(url + "\n")
-            print(f"OK: {url}")
-            return 0
 
-    print("ERROR: could not find ODT download URL in page", file=sys.stderr)
-    return 1
+        # 2) Click the Download link and capture the download URL
+        if not url:
+            try:
+                with page.expect_download(timeout=20000) as dl_info:
+                    page.get_by_role("link", name="Download").first.click()
+                url = dl_info.value.url
+                print(f"DEBUG: captured download url={url}", file=sys.stderr)
+            except Exception as e:
+                print(f"DEBUG: download click failed: {e}", file=sys.stderr)
+
+        # 3) Network responses
+        if not url:
+            url = found["url"]
+
+    if not url:
+        print("ERROR: could not find ODT download URL in page", file=sys.stderr)
+        return 1
+
+    with open(OUT_FILE, "w") as f:
+        f.write(url + "\n")
+    print(f"OK: {url}")
+    return 0
 
 
 if __name__ == "__main__":

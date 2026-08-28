@@ -78,13 +78,14 @@ The script shows the menu instantly and downloads only the files you choose.
 ## Keeping the ODT up to date
 
 The direct Microsoft download link for the ODT changes with every release, and
-Microsoft's download page is bot-protected (it can't be scraped by a script).
-To stay current automatically, this repo includes a GitHub Actions workflow
-(`.github/workflows/update-odt.yml`) that runs weekly:
+Microsoft's download page blocks plain HTTP clients and vanilla headless
+browsers. To stay current automatically, this repo includes a GitHub Actions
+workflow (`.github/workflows/update-odt.yml`) that runs weekly:
 
-1. It opens the Microsoft download page with a headless browser (Playwright).
+1. It opens the Microsoft download page with Camoufox (a stealth Firefox build).
 2. It extracts the latest `officedeploymenttool_*.exe` URL.
-3. It commits that URL to `tools/odt-url.txt`.
+3. If that fails, it falls back to GitHub code search for the newest URL.
+4. It commits that URL to `tools/odt-url.txt`.
 
 The installer reads `tools/odt-url.txt` first, then falls back to a GitHub
 mirror and a pinned link. You can also run the workflow manually from the
