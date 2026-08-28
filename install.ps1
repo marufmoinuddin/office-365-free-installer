@@ -207,7 +207,7 @@ $AppCatalog = @(
     @{ Name = 'Groove';     Id = 'Groove' },
     @{ Name = 'Lync';       Id = 'Lync' }
 )
-$DefaultSelected = @('Word', 'Excel', 'PowerPoint', 'Outlook', 'OneNote', 'Access', 'Publisher')
+$DefaultSelected = @('Word', 'Excel', 'PowerPoint')
 
 function Show-CustomSelector {
     param([string]$Arch)
