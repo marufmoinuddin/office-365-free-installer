@@ -26,7 +26,7 @@ $ErrorActionPreference = 'Stop'
 
 # --- Repo / download settings ---
 $RawBase    = 'https://raw.githubusercontent.com/marufmoinuddin/office-365-free-installer/main'
-$OdtUrl     = 'https://go.microsoft.com/fwlink/?linkid=626510'
+$OdtUrl     = 'https://go.microsoft.com/fwlink/p/?LinkID=626065'
 
 # --- Determine script root ---
 $ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }

@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 # which the download servers reject). Must be set before any web request.
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-$OdtUrl = 'https://go.microsoft.com/fwlink/?linkid=626510'
+$OdtUrl = 'https://go.microsoft.com/fwlink/p/?LinkID=626065'
 $OutFile = Join-Path $PSScriptRoot 'setup.exe'
 
 Write-Host 'Downloading the Office Deployment Tool...' -ForegroundColor Cyan
