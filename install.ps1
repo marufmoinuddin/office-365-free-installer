@@ -25,8 +25,14 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 # --- Repo / download settings ---
-$RawBase    = 'https://raw.githubusercontent.com/marufmoinuddin/office-365-free-installer/main'
-$OdtUrl     = 'https://go.microsoft.com/fwlink/p/?LinkID=626065'
+$RawBase      = 'https://raw.githubusercontent.com/marufmoinuddin/office-365-free-installer/main'
+# ODT download sources (tried in order):
+#  1. Dynamic URL from this repo's tools/odt-url.txt (auto-updated by GitHub Actions)
+#  2. GitHub mirror - stable URL that always serves the latest uploaded setup.exe
+#  3. Direct Microsoft link - pinned to a specific ODT version (last resort)
+$OdtUrlFile   = "$RawBase/tools/odt-url.txt"
+$OdtMirrorUrl = 'https://raw.githubusercontent.com/P1N2O/office-deployment-tool/main/setup.exe'
+$OdtDirectUrl = 'https://download.microsoft.com/download/6c1eeb25-cf8b-41d9-8d0d-cc1dbc032140/officedeploymenttool_20228-20124.exe'
 
 # --- Determine script root ---
 $ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
@@ -65,17 +71,42 @@ function Write-Step { param([string]$Message) Write-Host "`n==> $Message" -Foreg
 function Write-Ok   { param([string]$Message) Write-Host "[OK] $Message" -ForegroundColor Green }
 function Write-Err  { param([string]$Message) Write-Host "[ERROR] $Message" -ForegroundColor Red }
 
+function Get-DynamicOdtUrl {
+    # Read the current ODT URL maintained by the repo's GitHub Actions workflow
+    try {
+        $content = (Invoke-WebRequest -Uri $OdtUrlFile -UseBasicParsing -TimeoutSec 15).Content
+        $url = ($content -split "\r?\n")[0].Trim()
+        if ($url -match '^https://download\.microsoft\.com/.*\.exe$') { return $url }
+    } catch { }
+    return $null
+}
+
 function Ensure-Odt {
     if (Test-Path $OdtExe) { return $true }
     Write-Step 'Office Deployment Tool not found. Downloading the latest version...'
-    try {
-        Invoke-WebRequest -Uri $OdtUrl -OutFile $OdtExe -UseBasicParsing
-        Write-Ok "Downloaded to $OdtExe"
-        return $true
-    } catch {
-        Write-Err "Failed to download the Office Deployment Tool: $($_.Exception.Message)"
-        return $false
+    $sources = @()
+    $dynamic = Get-DynamicOdtUrl
+    if ($dynamic) { $sources += $dynamic }
+    $sources += $OdtMirrorUrl
+    $sources += $OdtDirectUrl
+    foreach ($url in $sources) {
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $OdtExe -UseBasicParsing
+            $size = (Get-Item $OdtExe).Length
+            if ($size -lt 1MB) {
+                Write-Err "Download from $url was not a valid setup.exe (only $size bytes). Trying next source..."
+                Remove-Item $OdtExe -Force -ErrorAction SilentlyContinue
+                continue
+            }
+            Write-Ok "Downloaded to $OdtExe"
+            return $true
+        } catch {
+            Write-Err "Failed to download from $url : $($_.Exception.Message)"
+            Remove-Item $OdtExe -Force -ErrorAction SilentlyContinue
+        }
     }
+    Write-Err 'All download sources failed. Check your internet connection and try again.'
+    return $false
 }
 
 function Get-ConfigFile {
@@ -175,7 +206,7 @@ function Show-Menu {
     Write-Host '                                   `````'
     Write-Host '  ============================================================================'
     Write-Host '    Office Installer'
-    Write-Host '  ============================================================'
+    Write-Host '  ============================================================================='
     Write-Host ''
     Write-Host "    Architecture : $Arch-bit"
     Write-Host "    ODT          : $OdtExe"

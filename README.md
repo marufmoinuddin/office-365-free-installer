@@ -13,6 +13,7 @@ detects your system architecture, and installs Office from the Microsoft CDN.
 
 - ✅ One-click menu-driven installer (`install.ps1`)
 - ✅ One-line install via `irm | iex` — menu shows instantly, files fetched on demand
+- ✅ Auto-updating ODT download URL (GitHub Actions workflow)
 - ✅ Auto-downloads the latest Office Deployment Tool (no bundled binaries)
 - ✅ Auto-detects 64-bit / 32-bit architecture
 - ✅ Full, Minimal, Office 2019 Enterprise, and Visio + Project presets
@@ -67,10 +68,27 @@ The script shows the menu instantly and downloads only the files you choose.
 3. It detects whether your system is 64-bit or 32-bit.
 4. Only after you pick an option, it downloads what's needed:
    - the matching config from `config/` (or generates one for Custom),
-   - the Office Deployment Tool (`tools\setup.exe`) if missing,
+   - the Office Deployment Tool (`tools\setup.exe`) if missing — the download
+     URL is kept current by a GitHub Actions workflow (`tools/odt-url.txt`),
+     with a mirror and a pinned link as fallbacks,
    - the OffScrub script only if you choose cleanup.
 5. It runs `setup.exe /configure <config>.xml`.
 6. Office is downloaded from the Microsoft CDN and installed.
+
+## Keeping the ODT up to date
+
+The direct Microsoft download link for the ODT changes with every release, and
+Microsoft's download page is bot-protected (it can't be scraped by a script).
+To stay current automatically, this repo includes a GitHub Actions workflow
+(`.github/workflows/update-odt.yml`) that runs weekly:
+
+1. It opens the Microsoft download page with a headless browser (Playwright).
+2. It extracts the latest `officedeploymenttool_*.exe` URL.
+3. It commits that URL to `tools/odt-url.txt`.
+
+The installer reads `tools/odt-url.txt` first, then falls back to a GitHub
+mirror and a pinned link. You can also run the workflow manually from the
+**Actions** tab.
 
 ## Configuration files
 
