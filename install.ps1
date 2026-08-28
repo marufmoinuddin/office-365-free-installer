@@ -145,14 +145,93 @@ function Show-Menu {
     Write-Host ''
     Write-Host '    1) Install Office 365 - Full'
     Write-Host '    2) Install Office 365 - Minimal'
-    Write-Host '    3) Install Office 2019 Enterprise'
-    Write-Host '    4) Install Visio + Project'
-    Write-Host '    5) Uninstall Office'
-    Write-Host '    6) Clean up Office leftovers (OffScrub)'
-    Write-Host '    7) Download / Update Office Deployment Tool'
-    Write-Host '    8) Exit'
+    Write-Host '    3) Install Office 365 - Custom'
+    Write-Host '    4) Install Office 2019 Enterprise'
+    Write-Host '    5) Install Visio + Project'
+    Write-Host '    6) Uninstall Office'
+    Write-Host '    7) Clean up Office leftovers (OffScrub)'
+    Write-Host '    8) Download / Update Office Deployment Tool'
+    Write-Host '    9) Exit'
     Write-Host ''
     return Read-Host '  Select an option'
+}
+
+# --- Custom install app catalog ---
+$AppCatalog = @(
+    @{ Name = 'Word';       Id = 'Word' },
+    @{ Name = 'Excel';      Id = 'Excel' },
+    @{ Name = 'PowerPoint'; Id = 'PowerPoint' },
+    @{ Name = 'Outlook';    Id = 'Outlook' },
+    @{ Name = 'OneNote';    Id = 'OneNote' },
+    @{ Name = 'Access';     Id = 'Access' },
+    @{ Name = 'Publisher';  Id = 'Publisher' },
+    @{ Name = 'Teams';      Id = 'Teams' },
+    @{ Name = 'OneDrive';   Id = 'OneDrive' },
+    @{ Name = 'Groove';     Id = 'Groove' },
+    @{ Name = 'Lync';       Id = 'Lync' }
+)
+$DefaultSelected = @('Word', 'Excel', 'PowerPoint', 'Outlook', 'OneNote', 'Access', 'Publisher')
+
+function Show-CustomSelector {
+    param([string]$Arch)
+    $selected = @($DefaultSelected)
+    $cfgPath = Join-Path $env:TEMP ("office365-custom-{0}.xml" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+
+    while ($true) {
+        Clear-Host
+        Write-Host ''
+        Write-Host '  ============================================================'
+        Write-Host '    Custom install - select Office apps'
+        Write-Host '  ============================================================'
+        Write-Host ''
+        Write-Host '    Type the numbers of the apps to toggle them on/off.'
+        Write-Host '    Press Enter with no input to start the install.'
+        Write-Host ''
+        for ($i = 0; $i -lt $AppCatalog.Count; $i++) {
+            $app = $AppCatalog[$i]
+            $mark = if ($selected -contains $app.Id) { '[x]' } else { '[ ]' }
+            Write-Host ("    {0,2}) {1} {2}" -f ($i + 1), $mark, $app.Name)
+        }
+        Write-Host ''
+        $input = Read-Host '  Toggle (e.g. 1 2 3 4)'
+        if ([string]::IsNullOrWhiteSpace($input)) { break }
+        foreach ($token in ($input -split '\s+')) {
+            if ($token -match '^\d+$') {
+                $idx = [int]$token - 1
+                if ($idx -ge 0 -and $idx -lt $AppCatalog.Count) {
+                    $id = $AppCatalog[$idx].Id
+                    if ($selected -contains $id) {
+                        $selected = @($selected | Where-Object { $_ -ne $id })
+                    } else {
+                        $selected += $id
+                    }
+                }
+            }
+        }
+    }
+
+    if ($selected.Count -eq 0) {
+        Write-Err 'No apps selected. Aborting custom install.'
+        return $null
+    }
+
+    $excluded = @($AppCatalog | Where-Object { $selected -notcontains $_.Id } | ForEach-Object { $_.Id })
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine('<Configuration>')
+    [void]$sb.AppendLine("  <Add OfficeClientEdition=`"$Arch`" Channel=`"Current`" ForceUpgrade=`"True`" MigrateArch=`"True`">")
+    [void]$sb.AppendLine('    <Product ID="O365ProPlusRetail">')
+    [void]$sb.AppendLine('      <Language ID="en-us" />')
+    foreach ($id in $excluded) {
+        [void]$sb.AppendLine("      <ExcludeApp ID=`"$id`" />")
+    }
+    [void]$sb.AppendLine('    </Product>')
+    [void]$sb.AppendLine('  </Add>')
+    [void]$sb.AppendLine('  <Display Level="Full" AcceptEULA="TRUE" />')
+    [void]$sb.AppendLine('  <Updates Enabled="TRUE" />')
+    [void]$sb.AppendLine('  <RemoveMSI />')
+    [void]$sb.AppendLine('</Configuration>')
+    $sb.ToString() | Set-Content -Path $cfgPath -Encoding UTF8
+    return $cfgPath
 }
 
 # --- Main loop ---
@@ -167,12 +246,19 @@ while ($true) {
             $cfg = if ($Arch -eq '32') { Join-Path $ConfigDir 'office365-x86-minimal.xml' } else { Join-Path $ConfigDir 'office365-minimal.xml' }
             Invoke-Install 'Office 365 (Minimal)' $cfg
         }
-        '3' { Invoke-Install 'Office 2019 Enterprise' (Join-Path $ConfigDir 'office2019-enterprise.xml') }
-        '4' { Invoke-Install 'Visio + Project' (Join-Path $ConfigDir 'visio-project.xml') }
-        '5' { Invoke-Install 'Office Uninstall' (Join-Path $ConfigDir 'uninstall.xml') }
-        '6' { Show-CleanupMenu }
-        '7' { if (Ensure-Odt) { Write-Ok "Office Deployment Tool is ready: $OdtExe" } }
-        '8' {
+        '3' {
+            $cfg = Show-CustomSelector -Arch $Arch
+            if ($cfg) {
+                Invoke-Install 'Office 365 (Custom)' $cfg
+                Remove-Item $cfg -Force -ErrorAction SilentlyContinue
+            }
+        }
+        '4' { Invoke-Install 'Office 2019 Enterprise' (Join-Path $ConfigDir 'office2019-enterprise.xml') }
+        '5' { Invoke-Install 'Visio + Project' (Join-Path $ConfigDir 'visio-project.xml') }
+        '6' { Invoke-Install 'Office Uninstall' (Join-Path $ConfigDir 'uninstall.xml') }
+        '7' { Show-CleanupMenu }
+        '8' { if (Ensure-Odt) { Write-Ok "Office Deployment Tool is ready: $OdtExe" } }
+        '9' {
             Write-Host 'Goodbye.'
             Stop-Transcript | Out-Null
             exit 0

@@ -52,12 +52,13 @@ The script downloads itself, requests administrator rights, and shows the menu.
 |--------|-------------|
 | 1. Install Office 365 – Full | Word, Excel, PowerPoint, Outlook, OneNote, Access, Publisher |
 | 2. Install Office 365 – Minimal | Word, Excel, PowerPoint only |
-| 3. Install Office 2019 Enterprise | ProPlus + Visio + Project (volume license) |
-| 4. Install Visio + Project | Adds Visio/Project to an existing Office 365 install |
-| 5. Uninstall Office | Removes all Click-to-Run Office products |
-| 6. Clean up leftovers | Microsoft's official OffScrub scripts |
-| 7. Download / Update ODT | Fetches the latest Office Deployment Tool |
-| 8. Exit | — |
+| 3. Install Office 365 – Custom | Pick apps yourself — toggle with numbers (e.g. `1 2 3 4`) |
+| 4. Install Office 2019 Enterprise | ProPlus + Visio + Project (volume license) |
+| 5. Install Visio + Project | Adds Visio/Project to an existing Office 365 install |
+| 6. Uninstall Office | Removes all Click-to-Run Office products |
+| 7. Clean up leftovers | Microsoft's official OffScrub scripts |
+| 8. Download / Update ODT | Fetches the latest Office Deployment Tool |
+| 9. Exit | — |
 
 ## How it works
 

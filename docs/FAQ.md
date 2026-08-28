@@ -13,7 +13,7 @@ automatically re-launches itself with elevation when you accept the UAC prompt.
 - Check the log file in `%TEMP%\OfficeInstaller\`.
 - Make sure no other Office installation is in progress.
 - If you have an older Office version installed, uninstall it first
-  (Control Panel → Programs) or use the cleanup option (menu item 6).
+  (Control Panel → Programs) or use the cleanup option (menu item 7).
 
 ## How do I change the language or channel?
 Edit the matching file in `config/` and change the `<Language ID="..." />`
