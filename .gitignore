@@ -1,0 +1,9 @@
+# Logs
+*.log
+
+# Downloaded Office Deployment Tool (fetched at runtime)
+tools/setup.exe
+
+# Temp files
+*.tmp
+Thumbs.db

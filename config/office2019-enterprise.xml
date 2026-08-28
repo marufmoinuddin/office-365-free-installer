@@ -1,0 +1,24 @@
+<!--
+  Office 2019 Enterprise (Volume License) - 64-bit
+
+  Installs Office 2019 Professional Plus, Visio 2019 Professional,
+  and Project 2019 Professional using the PerpetualVL2019 channel.
+
+  Note: Volume-licensed products require a KMS host or MAK key
+  configured on your network to activate.
+-->
+<Configuration>
+  <Add OfficeClientEdition="64" Channel="PerpetualVL2019">
+    <Product ID="ProPlus2019Volume">
+      <Language ID="en-us" />
+    </Product>
+    <Product ID="VisioPro2019Volume">
+      <Language ID="en-us" />
+    </Product>
+    <Product ID="ProjectPro2019Volume">
+      <Language ID="en-us" />
+    </Product>
+  </Add>
+  <Display Level="Full" AcceptEULA="TRUE" />
+  <Property Name="AUTOACTIVATE" Value="0" />
+</Configuration>

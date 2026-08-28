@@ -1,0 +1,6 @@
+<!--
+  Uninstall all Office Click-to-Run products.
+-->
+<Configuration>
+  <Remove All="TRUE" />
+</Configuration>
