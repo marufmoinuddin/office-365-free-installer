@@ -9,6 +9,14 @@ automatically re-launches itself with elevation when you accept the UAC prompt.
 - If you're behind a proxy/firewall, allow `go.microsoft.com`.
 - You can download the ODT manually and place it at `tools\setup.exe`.
 
+## I get "Could not create SSL/TLS secure channel" when downloading
+This happens on older Windows versions (Windows 7 / Server 2008 R2) that default
+to TLS 1.0/1.1, while the download server requires TLS 1.2.
+
+- The installer now forces TLS 1.2 automatically, so this should be fixed.
+- If it still fails, install the latest Windows updates / root certificates
+  (KB3140245 enables TLS 1.2 on Windows 7), then retry.
+
 ## Installation fails with an error
 - Check the log file in `%TEMP%\OfficeInstaller\`.
 - Make sure no other Office installation is in progress.

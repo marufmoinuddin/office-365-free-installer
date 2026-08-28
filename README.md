@@ -12,7 +12,7 @@ detects your system architecture, and installs Office from the Microsoft CDN.
 ## Features
 
 - ✅ One-click menu-driven installer (`install.ps1`)
-- ✅ One-line install via `irm | iex`
+- ✅ One-line install via `irm | iex` — menu shows instantly, files fetched on demand
 - ✅ Auto-downloads the latest Office Deployment Tool (no bundled binaries)
 - ✅ Auto-detects 64-bit / 32-bit architecture
 - ✅ Full, Minimal, Office 2019 Enterprise, and Visio + Project presets
@@ -37,7 +37,7 @@ Open **PowerShell** and run:
 irm https://raw.githubusercontent.com/marufmoinuddin/office-365-free-installer/main/install.ps1 | iex
 ```
 
-The script downloads itself, requests administrator rights, and shows the menu.
+The script shows the menu instantly and downloads only the files you choose.
 
 ### Option B — From the repository
 
@@ -62,13 +62,14 @@ The script downloads itself, requests administrator rights, and shows the menu.
 
 ## How it works
 
-1. `install.ps1` checks for administrator rights and elevates if needed.
-2. When run via `irm | iex`, it first downloads the repository to
-   `%TEMP%\OfficeInstaller-Bootstrap` and runs from there.
+1. `install.ps1` shows the menu instantly — nothing is downloaded up front.
+2. It checks for administrator rights and elevates if needed.
 3. It detects whether your system is 64-bit or 32-bit.
-4. If `tools\setup.exe` (the ODT) is missing, it downloads it from
-   `https://go.microsoft.com/fwlink/?linkid=626510`.
-5. It runs `setup.exe /configure <config>.xml` with the matching config.
+4. Only after you pick an option, it downloads what's needed:
+   - the matching config from `config/` (or generates one for Custom),
+   - the Office Deployment Tool (`tools\setup.exe`) if missing,
+   - the OffScrub script only if you choose cleanup.
+5. It runs `setup.exe /configure <config>.xml`.
 6. Office is downloaded from the Microsoft CDN and installed.
 
 ## Configuration files

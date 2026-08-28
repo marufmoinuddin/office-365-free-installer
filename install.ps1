@@ -20,42 +20,17 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
-# --- Repo / bootstrap settings ---
-$RepoZipUrl = 'https://github.com/marufmoinuddin/office-365-free-installer/archive/refs/heads/main.zip'
+# Force TLS 1.2 for older Windows (Windows 7 / Server 2008 R2 default to TLS 1.0/1.1,
+# which the download servers reject). Must be set before any web request.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+# --- Repo / download settings ---
+$RawBase    = 'https://raw.githubusercontent.com/marufmoinuddin/office-365-free-installer/main'
 $OdtUrl     = 'https://go.microsoft.com/fwlink/?linkid=626510'
 
 # --- Determine script root ---
 $ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 $ConfigDir  = Join-Path $ScriptRoot 'config'
-
-# --- Bootstrap: if the config files are missing (e.g. running via irm | iex),
-#     download the repository and re-run from the extracted copy. ---
-if (-not (Test-Path (Join-Path $ConfigDir 'office365-full.xml'))) {
-    Write-Host 'Downloading Office Installer...' -ForegroundColor Cyan
-    $bootstrapDir = Join-Path $env:TEMP 'OfficeInstaller-Bootstrap'
-    $zip          = Join-Path $bootstrapDir 'repo.zip'
-    New-Item -ItemType Directory -Force -Path $bootstrapDir | Out-Null
-    try {
-        Invoke-WebRequest -Uri $RepoZipUrl -OutFile $zip -UseBasicParsing
-        Expand-Archive -Path $zip -DestinationPath $bootstrapDir -Force
-    } catch {
-        Write-Host "[ERROR] Failed to download the installer: $($_.Exception.Message)" -ForegroundColor Red
-        Read-Host 'Press Enter to exit'
-        exit 1
-    }
-    $extracted = Get-ChildItem $bootstrapDir -Directory |
-                 Where-Object { $_.Name -like 'office-365-free-installer-*' } |
-                 Select-Object -First 1
-    if (-not $extracted) {
-        Write-Host '[ERROR] Could not locate the extracted installer.' -ForegroundColor Red
-        Read-Host 'Press Enter to exit'
-        exit 1
-    }
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $extracted.FullName 'install.ps1')
-    exit
-}
-
-# --- Paths ---
 $ToolsDir   = Join-Path $ScriptRoot 'tools'
 $ScriptsDir = Join-Path $ScriptRoot 'scripts'
 $OdtExe     = Join-Path $ToolsDir 'setup.exe'
@@ -68,7 +43,14 @@ New-Item -ItemType Directory -Force -Path $LogDir, $ToolsDir | Out-Null
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Host 'Requesting administrator privileges...' -ForegroundColor Yellow
-    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"") -Verb RunAs
+    if ($PSCommandPath) {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"") -Verb RunAs
+    } else {
+        # Running via irm | iex — save the script to a temp file and elevate that
+        $tmpScript = Join-Path $env:TEMP 'office-installer.ps1'
+        Invoke-WebRequest -Uri "$RawBase/install.ps1" -OutFile $tmpScript -UseBasicParsing
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$tmpScript`"") -Verb RunAs
+    }
     exit
 }
 
@@ -93,6 +75,35 @@ function Ensure-Odt {
     } catch {
         Write-Err "Failed to download the Office Deployment Tool: $($_.Exception.Message)"
         return $false
+    }
+}
+
+function Get-ConfigFile {
+    param([string]$Name)
+    $local = Join-Path $ConfigDir $Name
+    if (Test-Path $local) { return $local }
+    # Not present locally (running via irm | iex) — fetch just this file
+    $tmp = Join-Path $env:TEMP $Name
+    try {
+        Invoke-WebRequest -Uri "$RawBase/config/$Name" -OutFile $tmp -UseBasicParsing
+        return $tmp
+    } catch {
+        Write-Err "Failed to download config '$Name': $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Get-ScriptFile {
+    param([string]$Name)
+    $local = Join-Path $ScriptsDir $Name
+    if (Test-Path $local) { return $local }
+    $tmp = Join-Path $env:TEMP $Name
+    try {
+        Invoke-WebRequest -Uri "$RawBase/scripts/$Name" -OutFile $tmp -UseBasicParsing
+        return $tmp
+    } catch {
+        Write-Err "Failed to download script '$Name': $($_.Exception.Message)"
+        return $null
     }
 }
 
@@ -125,9 +136,18 @@ function Show-CleanupMenu {
     Write-Host ''
     $choice = Read-Host '  Select an option'
     switch ($choice) {
-        '1' { & cscript.exe '//nologo' (Join-Path $ScriptsDir 'OffScrubC2R.vbs') }
-        '2' { & cscript.exe '//nologo' (Join-Path $ScriptsDir 'OffScrub_O16msi.vbs') }
-        '3' { & cscript.exe '//nologo' (Join-Path $ScriptsDir 'OffScrub_O15msi.vbs') }
+        '1' {
+            $s = Get-ScriptFile 'OffScrubC2R.vbs'
+            if ($s) { & cscript.exe '//nologo' $s }
+        }
+        '2' {
+            $s = Get-ScriptFile 'OffScrub_O16msi.vbs'
+            if ($s) { & cscript.exe '//nologo' $s }
+        }
+        '3' {
+            $s = Get-ScriptFile 'OffScrub_O15msi.vbs'
+            if ($s) { & cscript.exe '//nologo' $s }
+        }
         '4' { return }
         default { Write-Host 'Invalid option.' -ForegroundColor Red }
     }
@@ -239,12 +259,14 @@ while ($true) {
     $choice = Show-Menu
     switch ($choice) {
         '1' {
-            $cfg = if ($Arch -eq '32') { Join-Path $ConfigDir 'office365-x86-full.xml' } else { Join-Path $ConfigDir 'office365-full.xml' }
-            Invoke-Install 'Office 365 (Full)' $cfg
+            $name = if ($Arch -eq '32') { 'office365-x86-full.xml' } else { 'office365-full.xml' }
+            $cfg = Get-ConfigFile $name
+            if ($cfg) { Invoke-Install 'Office 365 (Full)' $cfg }
         }
         '2' {
-            $cfg = if ($Arch -eq '32') { Join-Path $ConfigDir 'office365-x86-minimal.xml' } else { Join-Path $ConfigDir 'office365-minimal.xml' }
-            Invoke-Install 'Office 365 (Minimal)' $cfg
+            $name = if ($Arch -eq '32') { 'office365-x86-minimal.xml' } else { 'office365-minimal.xml' }
+            $cfg = Get-ConfigFile $name
+            if ($cfg) { Invoke-Install 'Office 365 (Minimal)' $cfg }
         }
         '3' {
             $cfg = Show-CustomSelector -Arch $Arch
@@ -253,9 +275,18 @@ while ($true) {
                 Remove-Item $cfg -Force -ErrorAction SilentlyContinue
             }
         }
-        '4' { Invoke-Install 'Office 2019 Enterprise' (Join-Path $ConfigDir 'office2019-enterprise.xml') }
-        '5' { Invoke-Install 'Visio + Project' (Join-Path $ConfigDir 'visio-project.xml') }
-        '6' { Invoke-Install 'Office Uninstall' (Join-Path $ConfigDir 'uninstall.xml') }
+        '4' {
+            $cfg = Get-ConfigFile 'office2019-enterprise.xml'
+            if ($cfg) { Invoke-Install 'Office 2019 Enterprise' $cfg }
+        }
+        '5' {
+            $cfg = Get-ConfigFile 'visio-project.xml'
+            if ($cfg) { Invoke-Install 'Visio + Project' $cfg }
+        }
+        '6' {
+            $cfg = Get-ConfigFile 'uninstall.xml'
+            if ($cfg) { Invoke-Install 'Office Uninstall' $cfg }
+        }
         '7' { Show-CleanupMenu }
         '8' { if (Ensure-Odt) { Write-Ok "Office Deployment Tool is ready: $OdtExe" } }
         '9' {

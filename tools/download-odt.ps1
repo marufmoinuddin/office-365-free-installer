@@ -10,6 +10,11 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+
+# Force TLS 1.2 for older Windows (Windows 7 / Server 2008 R2 default to TLS 1.0/1.1,
+# which the download servers reject). Must be set before any web request.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
 $OdtUrl = 'https://go.microsoft.com/fwlink/?linkid=626510'
 $OutFile = Join-Path $PSScriptRoot 'setup.exe'
 
