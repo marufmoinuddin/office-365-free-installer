@@ -1,20 +1,25 @@
 <!--
   MainWindow.xaml — WPF UI for OfficeInstallerGUI.ps1
   ====================================================
-  This file is loaded at runtime by OfficeInstallerGUI.ps1 (it is NOT compiled).
-  Keep it in the same folder as the script. The script also embeds an identical
-  copy of this XAML as an inline fallback in case the file is missing.
+  Loaded at runtime by OfficeInstallerGUI.ps1 (not compiled). Keep it in the
+  same folder as the script; the script also embeds an identical inline copy.
 
-  Theme: two ResourceDictionaries (DarkTheme / LightTheme) are defined in the
-  merged dictionaries. The script swaps which one is active by re-ordering the
-  collection. All themeable colors are referenced with {DynamicResource ...} so
-  they re-resolve automatically when the theme is swapped.
+  Layout follows the visual UI reference:
+    Tab 1  Main Window            — product/edition, architecture, apps, channel, version
+    Tab 2  Utilities and Settings — launch Office apps, diagnostics, log panel
+    Tab 3  Download Office        — download with live progress, create ISO
+    Tab 4  About                  — description, docs, paths, optional KMS
+
+  Theme: two ResourceDictionaries (LightTheme / DarkTheme). The LAST dictionary
+  in the merged collection wins, so DarkTheme (last) is the active default. The
+  script swaps which one is active by re-ordering the collection; all themeable
+  colors use {DynamicResource ...} so they re-resolve on swap.
 -->
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Office Installer GUI"
-        Height="760" Width="1000"
-        MinHeight="480" MinWidth="660"
+        Title="OfficeInstallerGUI"
+        Height="780" Width="1040"
+        MinHeight="540" MinWidth="720"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource WindowBackground}"
         FontFamily="Segoe UI" FontSize="13"
@@ -22,8 +27,7 @@
     <Window.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <!-- Light theme (defined first; the LAST dictionary in the
-                     collection wins, so DarkTheme below is the active default) -->
+                <!-- Light theme (defined first; DarkTheme below is the active default) -->
                 <ResourceDictionary x:Key="LightTheme">
                     <SolidColorBrush x:Key="WindowBackground" Color="#F5F5F5"/>
                     <SolidColorBrush x:Key="PanelBackground" Color="#FFFFFF"/>
@@ -120,6 +124,14 @@
                 </Setter>
             </Style>
 
+            <!-- Utility tile button (app launchers / diagnostics) -->
+            <Style x:Key="UtilityButton" TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                <Setter Property="MinWidth" Value="120"/>
+                <Setter Property="MinHeight" Value="40"/>
+                <Setter Property="Margin" Value="4"/>
+                <Setter Property="Padding" Value="10,6"/>
+            </Style>
+
             <!-- Tab control / tab item styling -->
             <Style TargetType="TabControl">
                 <Setter Property="Background" Value="{DynamicResource WindowBackground}"/>
@@ -154,6 +166,14 @@
                 <Setter Property="FontSize" Value="12"/>
                 <Setter Property="Margin" Value="0,8,0,2"/>
             </Style>
+
+            <!-- Section header style -->
+            <Style x:Key="SectionHeader" TargetType="TextBlock">
+                <Setter Property="Foreground" Value="{DynamicResource TextForeground}"/>
+                <Setter Property="FontSize" Value="15"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+                <Setter Property="Margin" Value="0,10,0,4"/>
+            </Style>
         </ResourceDictionary>
     </Window.Resources>
 
@@ -165,82 +185,172 @@
 
         <TabControl x:Name="MainTabs" Grid.Row="0">
 
-            <!-- ================= TAB 1: INSTALL ================= -->
-            <TabItem Header="Install">
+            <!-- ================= TAB 1: MAIN WINDOW (Install) ================= -->
+            <TabItem Header="Main Window">
                 <Grid Margin="12">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="190"/>
+                        <ColumnDefinition Width="200"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
 
-                    <!-- Left column: branding (simple drawn tile, not Microsoft's logo) -->
-                    <StackPanel Grid.Column="0" Margin="0,8,16,0" VerticalAlignment="Top">
+                    <!-- Left column: branding + primary actions -->
+                    <StackPanel Grid.Column="0" Margin="0,8,16,0">
                         <Border Width="110" Height="110" CornerRadius="18" Background="{DynamicResource AccentBrush}" HorizontalAlignment="Left">
                             <TextBlock Text="OFFICE" Foreground="White" FontSize="18" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
-                        <TextBlock Text="Office Installer" FontSize="20" FontWeight="Bold" Foreground="{DynamicResource TextForeground}" Margin="0,14,0,0" TextWrapping="Wrap"/>
-                        <TextBlock Text="A GUI front-end for Microsoft's official Office Deployment Tool. It generates configuration.xml and runs setup.exe for you." FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                        <CheckBox x:Name="InstallOfflineCheck" Content="Use Offline Installation" Foreground="{DynamicResource TextForeground}" Margin="0,16,0,0"/>
+                        <StackPanel x:Name="OfflineSourcePanel" Orientation="Horizontal" Margin="20,4,0,0" Visibility="Collapsed">
+                            <TextBox x:Name="InstallOfflinePathBox" Width="130" Height="26" VerticalContentAlignment="Center" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                            <Button x:Name="InstallOfflineBrowseBtn" Content="..." Style="{StaticResource SecondaryButton}" Padding="8,4" Margin="4,0,0,0"/>
+                        </StackPanel>
+                        <Button x:Name="InstallBtn" Content="Install Office" Style="{StaticResource PrimaryButton}" Margin="0,16,0,0" MinWidth="160"/>
+                        <Button x:Name="UninstallBtn" Content="Uninstall Office" Style="{StaticResource SecondaryButton}" Margin="0,8,0,0" MinWidth="160"/>
+                        <Button x:Name="StatusBtn" Content="Check Status" Style="{StaticResource SecondaryButton}" Margin="0,8,0,0" MinWidth="160"/>
+                        <ProgressBar x:Name="InstallProgress" Height="6" IsIndeterminate="True" Visibility="Collapsed" Margin="4,12,4,0" Foreground="{DynamicResource AccentBrush}" Background="{DynamicResource ControlBackground}"/>
                     </StackPanel>
 
-                    <!-- Right column: controls -->
+                    <!-- Right column: product configuration -->
                     <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
                         <StackPanel>
-                            <TextBlock Text="Edition" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="InstallEditionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                            <TextBlock Text="Office Product" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource TextForeground}"/>
 
-                            <TextBlock Text="Architecture" Style="{StaticResource FieldLabel}"/>
-                            <StackPanel Orientation="Horizontal">
-                                <RadioButton x:Name="InstallArch64Radio" Content="64-bit (x64)" IsChecked="True" Foreground="{DynamicResource TextForeground}" Margin="0,0,20,0"/>
-                                <RadioButton x:Name="InstallArch32Radio" Content="32-bit (x86)" Foreground="{DynamicResource TextForeground}"/>
-                            </StackPanel>
+                            <!-- Product Family + Architecture -->
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Product Family" Style="{StaticResource FieldLabel}"/>
+                                    <ComboBox x:Name="InstallFamilyCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="24,0,0,0">
+                                    <TextBlock Text="Architecture" Style="{StaticResource FieldLabel}"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <RadioButton x:Name="InstallArch64Radio" Content="x64" IsChecked="True" Foreground="{DynamicResource TextForeground}" Margin="0,0,20,0"/>
+                                        <RadioButton x:Name="InstallArch32Radio" Content="x86" Foreground="{DynamicResource TextForeground}"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Grid>
 
-                            <CheckBox x:Name="InstallIndividualCheck" Content="Install individual apps instead of the full suite" Foreground="{DynamicResource TextForeground}" Margin="0,10,0,0"/>
-                            <StackPanel x:Name="YearSelectorPanel" Orientation="Horizontal" Margin="24,4,0,0" Visibility="Collapsed">
-                                <TextBlock Text="Project / Visio year:" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center"/>
-                                <ComboBox x:Name="InstallYearCombo" Width="90" Height="26" Margin="8,0,0,0" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
-                            </StackPanel>
+                            <!-- Product / Edition + Single Products toggle -->
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Product / Edition" Style="{StaticResource FieldLabel}"/>
+                                    <ComboBox x:Name="InstallEditionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                </StackPanel>
+                                <CheckBox x:Name="InstallIndividualCheck" Content="Single Products" Grid.Column="1" Margin="24,26,0,0" Foreground="{DynamicResource TextForeground}"/>
+                            </Grid>
 
-                            <TextBlock x:Name="AppsLabel" Text="Applications (uncheck to exclude from the suite)" Style="{StaticResource FieldLabel}"/>
-                            <Border x:Name="SuiteAppsBorder" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="120">
-                                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                    <ItemsControl x:Name="SuiteAppsList"/>
-                                </ScrollViewer>
-                            </Border>
-                            <Border x:Name="IndividualAppsBorder" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="120" Visibility="Collapsed">
-                                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                    <ItemsControl x:Name="IndividualAppsList"/>
-                                </ScrollViewer>
-                            </Border>
+                            <!-- Dual application checklists -->
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock x:Name="SuiteLabel" Text="Suite Applications" Style="{StaticResource FieldLabel}"/>
+                                    <Border x:Name="SuiteAppsBorder" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="150">
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                            <ItemsControl x:Name="SuiteAppsList"/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="16,0,0,0">
+                                    <TextBlock x:Name="SingleLabel" Text="Single Products" Style="{StaticResource FieldLabel}"/>
+                                    <Border x:Name="IndividualAppsBorder" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="150" Visibility="Collapsed">
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                            <ItemsControl x:Name="IndividualAppsList"/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
 
+                            <!-- Channel -->
                             <TextBlock Text="Channel" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="InstallChannelCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="InstallChannelCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                <Button x:Name="ChannelInfoBtn" Content="?" Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource SecondaryButton}" Padding="10,4" ToolTip="Show channel information"/>
+                            </Grid>
 
+                            <!-- Product Version -->
+                            <TextBlock Text="Product Version" Style="{StaticResource FieldLabel}"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="InstallVersionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                <Button x:Name="VersionSelectBtn" Content="Select..." Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource SecondaryButton}" Padding="10,4"/>
+                            </Grid>
+
+                            <!-- Languages -->
                             <TextBlock Text="Languages" Style="{StaticResource FieldLabel}"/>
-                            <Border BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="130">
+                            <Border BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="120">
                                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                                     <ItemsControl x:Name="InstallLanguagesList"/>
                                 </ScrollViewer>
                             </Border>
-
-                            <CheckBox x:Name="InstallOfflineCheck" Content="Use offline source (install from a folder downloaded via the Download tab)" Foreground="{DynamicResource TextForeground}" Margin="0,10,0,0"/>
-                            <StackPanel x:Name="OfflineSourcePanel" Orientation="Horizontal" Margin="24,4,0,0" Visibility="Collapsed">
-                                <TextBox x:Name="InstallOfflinePathBox" Width="280" Height="26" VerticalContentAlignment="Center" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
-                                <Button x:Name="InstallOfflineBrowseBtn" Content="Browse..." Style="{StaticResource SecondaryButton}" Padding="10,4"/>
-                            </StackPanel>
-
-                            <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
-                                <Button x:Name="InstallBtn" Content="Install Office" Style="{StaticResource PrimaryButton}" MinWidth="140"/>
-                                <Button x:Name="UninstallBtn" Content="Uninstall Office" Style="{StaticResource SecondaryButton}" MinWidth="140"/>
-                                <Button x:Name="StatusBtn" Content="Check Installed Status" Style="{StaticResource SecondaryButton}" MinWidth="150"/>
-                            </StackPanel>
-                            <ProgressBar x:Name="InstallProgress" Height="6" IsIndeterminate="True" Visibility="Collapsed" Margin="4,8,4,0" Foreground="{DynamicResource AccentBrush}" Background="{DynamicResource ControlBackground}"/>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
             </TabItem>
 
-            <!-- ================= TAB 2: DOWNLOAD / OFFLINE PACKAGE ================= -->
-            <TabItem Header="Download / Offline Package">
+            <!-- ================= TAB 2: UTILITIES AND SETTINGS ================= -->
+            <TabItem Header="Utilities and Settings">
+                <Grid Margin="12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Text="Office Utilities" Style="{StaticResource SectionHeader}"/>
+                            <UniformGrid Columns="4">
+                                <Button x:Name="LaunchWordBtn" Content="Word" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchExcelBtn" Content="Excel" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchPowerPointBtn" Content="PowerPoint" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchOutlookBtn" Content="Outlook" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchOneNoteBtn" Content="OneNote" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchAccessBtn" Content="Access" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchPublisherBtn" Content="Publisher" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchProjectBtn" Content="Project" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchVisioBtn" Content="Visio" Style="{StaticResource UtilityButton}"/>
+                            </UniformGrid>
+
+                            <TextBlock Text="Office Diagnostics" Style="{StaticResource SectionHeader}"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="CheckInstallBtn" Content="Check Installation" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="CheckOdtBtn" Content="Check ODT" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="OpenLogFolderBtn" Content="Open Log Folder" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="OpenDownloadFolderBtn" Content="Open Download Folder" Style="{StaticResource UtilityButton}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Log / Output panel -->
+                    <Grid Grid.Row="1" Margin="0,10,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="Log / Output" Style="{StaticResource FieldLabel}" Margin="0,0,0,4"/>
+                        <RichTextBox x:Name="LogBox" Grid.Row="1" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Background="{DynamicResource LogBackground}" Foreground="{DynamicResource LogText}" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" FontFamily="Consolas" FontSize="12"/>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ================= TAB 3: DOWNLOAD OFFICE ================= -->
+            <TabItem Header="Download Office">
                 <Grid Margin="12">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -251,56 +361,76 @@
                         <StackPanel>
                             <TextBlock x:Name="DownloadVersionLabel" Text="Office Deployment Tool version: (not yet resolved)" Foreground="{DynamicResource TextSecondary}" FontSize="12" Margin="0,0,0,6"/>
 
-                            <TextBlock Text="Edition" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="DownloadEditionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                            <!-- Product + Architecture + Languages -->
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Product" Style="{StaticResource FieldLabel}"/>
+                                    <ComboBox x:Name="DownloadEditionCombo" Width="220" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="16,0,0,0">
+                                    <TextBlock Text="Architecture" Style="{StaticResource FieldLabel}"/>
+                                    <ComboBox x:Name="DownloadArchCombo" Width="90" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Margin="16,0,0,0">
+                                    <TextBlock Text="Languages" Style="{StaticResource FieldLabel}"/>
+                                    <Border BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="110">
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                            <ItemsControl x:Name="DownloadLanguagesList"/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
 
-                            <TextBlock Text="Architecture" Style="{StaticResource FieldLabel}"/>
-                            <StackPanel Orientation="Horizontal">
-                                <RadioButton x:Name="DownloadArch64Radio" Content="64-bit (x64)" IsChecked="True" Foreground="{DynamicResource TextForeground}" Margin="0,0,20,0"/>
-                                <RadioButton x:Name="DownloadArch32Radio" Content="32-bit (x86)" Foreground="{DynamicResource TextForeground}"/>
-                            </StackPanel>
+                            <!-- Product Version -->
+                            <TextBlock Text="Product Version" Style="{StaticResource FieldLabel}"/>
+                            <ComboBox x:Name="DownloadVersionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
 
+                            <!-- Channel -->
                             <TextBlock Text="Channel" Style="{StaticResource FieldLabel}"/>
                             <ComboBox x:Name="DownloadChannelCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
 
-                            <TextBlock Text="Languages" Style="{StaticResource FieldLabel}"/>
-                            <Border BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="110">
-                                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                    <ItemsControl x:Name="DownloadLanguagesList"/>
-                                </ScrollViewer>
-                            </Border>
-
-                            <TextBlock Text="Destination folder (for the downloaded source files)" Style="{StaticResource FieldLabel}"/>
+                            <!-- Destination folder -->
+                            <TextBlock Text="Destination folder" Style="{StaticResource FieldLabel}"/>
                             <StackPanel Orientation="Horizontal">
                                 <TextBox x:Name="DownloadDestBox" Width="360" Height="26" VerticalContentAlignment="Center" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
                                 <Button x:Name="DownloadDestBrowseBtn" Content="Browse..." Style="{StaticResource SecondaryButton}" Padding="10,4"/>
                             </StackPanel>
 
+                            <!-- Download / Cancel -->
                             <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                                <Button x:Name="DownloadBtn" Content="Download Office (offline source)" Style="{StaticResource PrimaryButton}" MinWidth="220"/>
-                                <Button x:Name="CreateIsoBtn" Content="Create ISO from downloaded source" Style="{StaticResource SecondaryButton}" MinWidth="220" IsEnabled="False"/>
+                                <Button x:Name="DownloadBtn" Content="Download Office" Style="{StaticResource PrimaryButton}" MinWidth="200"/>
+                                <Button x:Name="CancelDownloadBtn" Content="Cancel Download" Style="{StaticResource SecondaryButton}" MinWidth="160" Visibility="Collapsed"/>
                             </StackPanel>
-                            <ProgressBar x:Name="DownloadProgress" Height="6" IsIndeterminate="True" Visibility="Collapsed" Margin="4,8,4,0" Foreground="{DynamicResource AccentBrush}" Background="{DynamicResource ControlBackground}"/>
+
+                            <!-- Progress -->
+                            <TextBlock x:Name="DownloadProgressLabel" Text="Download Progress" Style="{StaticResource FieldLabel}" Margin="0,12,0,2"/>
+                            <ProgressBar x:Name="DownloadProgress" Height="8" IsIndeterminate="True" Visibility="Collapsed" Foreground="{DynamicResource AccentBrush}" Background="{DynamicResource ControlBackground}"/>
+                            <TextBlock x:Name="DownloadProgressText" Text="" Foreground="{DynamicResource TextForeground}" FontSize="12" Margin="0,4,0,0"/>
+                            <TextBlock x:Name="DownloadSpeedText" Text="" Foreground="{DynamicResource TextSecondary}" FontSize="12" Margin="0,2,0,0"/>
+
+                            <!-- Create ISO -->
+                            <Button x:Name="CreateIsoBtn" Content="Create ISO" Style="{StaticResource SecondaryButton}" MinWidth="200" Margin="4,12,4,0" HorizontalAlignment="Left" IsEnabled="False"/>
+
+                            <!-- One-stream note (ODT has no such switch; informational only) -->
+                            <CheckBox x:Name="DownloadSingleStreamCheck" Content="Download files in one stream" Foreground="{DynamicResource TextForeground}" Margin="0,10,0,0" ToolTip="ODT does not expose a single-vs-multi-thread download switch; this option is retained for UI parity and does not change ODT behavior."/>
+
+                            <!-- Status -->
+                            <TextBlock x:Name="DownloadStatusText" Text="Status: Ready" Foreground="{DynamicResource TextSecondary}" FontSize="12" Margin="0,8,0,0"/>
                         </StackPanel>
                     </ScrollViewer>
-
-                    <!-- Live console / log panel -->
-                    <Grid Grid.Row="1" Margin="0,10,0,0">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
-                        <TextBlock Text="Console" Style="{StaticResource FieldLabel}" Margin="0,0,0,4"/>
-                        <RichTextBox x:Name="DownloadLogBox" Grid.Row="1" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Background="{DynamicResource LogBackground}" Foreground="{DynamicResource LogText}" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" FontFamily="Consolas" FontSize="12"/>
-                    </Grid>
                 </Grid>
             </TabItem>
 
-            <!-- ================= TAB 3: ABOUT / SETTINGS ================= -->
-            <TabItem Header="About / Settings">
+            <!-- ================= TAB 4: ABOUT ================= -->
+            <TabItem Header="About">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="20">
-                        <TextBlock Text="Office Installer GUI" FontSize="26" FontWeight="Bold" Foreground="{DynamicResource TextForeground}"/>
+                        <TextBlock Text="OfficeInstallerGUI" FontSize="26" FontWeight="Bold" Foreground="{DynamicResource TextForeground}"/>
                         <TextBlock x:Name="AboutVersionText" Text="Version 1.0.0" FontSize="13" Foreground="{DynamicResource TextSecondary}" Margin="0,4,0,12"/>
 
                         <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextForeground}" FontSize="13" Margin="0,0,0,8">
@@ -345,7 +475,7 @@
         <!-- Bottom bar: theme toggle + status -->
         <Border Grid.Row="1" Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="0,1,0,0" Padding="12,6">
             <DockPanel>
-                <CheckBox x:Name="DarkThemeCheck" Content="Dark theme" IsChecked="True" Foreground="{DynamicResource TextForeground}" DockPanel.Dock="Left" VerticalAlignment="Center"/>
+                <CheckBox x:Name="DarkThemeCheck" Content="Use Dark Theme" IsChecked="True" Foreground="{DynamicResource TextForeground}" DockPanel.Dock="Left" VerticalAlignment="Center"/>
                 <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextSecondary}" TextAlignment="Right" VerticalAlignment="Center" Text="Ready"/>
             </DockPanel>
         </Border>

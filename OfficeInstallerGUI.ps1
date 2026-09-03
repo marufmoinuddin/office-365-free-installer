@@ -91,6 +91,24 @@ $script:Editions = @(
     @{ Name = 'Office Standard 2019 (Volume)';      Id = 'Standard2019Volume' }
 )
 
+# Product Family groupings — a UI layer that filters the Edition dropdown.
+$script:ProductFamilies = @(
+    @{ Name = 'Microsoft 365';    Editions = @('O365ProPlusRetail', 'O365BusinessRetail') },
+    @{ Name = 'Office LTSC 2024'; Editions = @('ProPlus2024Volume', 'Standard2024Volume') },
+    @{ Name = 'Office LTSC 2021'; Editions = @('ProPlus2021Volume', 'Standard2021Volume') },
+    @{ Name = 'Office 2019';      Editions = @('ProPlus2019Volume', 'Standard2019Volume') }
+)
+
+# Product Version presets (real ODT build numbers). 'CUSTOM' opens a manual entry
+# in the Select Product Version dialog. The chosen version is written to the
+# config as <Version>16.0.x.y</Version>.
+$script:ProductVersions = @(
+    @{ Name = '16.0.20228.20186 — Windows 10/11'; Id = '16.0.20228.20186' },
+    @{ Name = '16.0.15601.20538 — Windows 8/8.1'; Id = '16.0.15601.20538' },
+    @{ Name = '16.0.12527.22286 — Windows 7';     Id = '16.0.12527.22286' },
+    @{ Name = 'Custom Version';                    Id = 'CUSTOM' }
+)
+
 # Section 1.5 — Channel dropdown. These are the seven official, documented ODT
 # Channel values. We deliberately do NOT reproduce the extended/undocumented
 # channel list seen in third-party tools (that comes from an internal Microsoft
@@ -158,10 +176,15 @@ $script:PollTimer         = $null
 $script:Settings          = @{ DarkTheme = $true }
 $script:LastDownloadDest  = $null   # destination folder of the last successful download
 $script:LastDownloadFolder = $null  # same as above; used to enable "Create ISO"
+$script:SelectedVersion   = $null   # ODT product version (16.0.x.y) or $null for latest
+$script:DownloadStartSize = 0       # folder size at download start (for speed calc)
+$script:DownloadLastSize  = 0       # last sampled folder size
+$script:DownloadLastTime  = $null   # last sample timestamp
 $script:SyncingEdition    = $false  # guards against event recursion when syncing tabs
 $script:SyncingArch       = $false
 $script:SyncingChannel    = $false
 $script:SyncingLanguages  = $false
+$script:SyncingVersion    = $false
 $script:LogTailState      = @{}     # file path -> last-read byte offset for log tailing
 
 # Theme dictionary references. Captured once after the window loads because a
@@ -190,11 +213,28 @@ $script:Job = @{
 # missing (e.g. someone copied only the .ps1), we fall back to this identical
 # inline copy. Keep it in sync with MainWindow.xaml.
 $script:InlineXaml = @'
+<!--
+  MainWindow.xaml — WPF UI for OfficeInstallerGUI.ps1
+  ====================================================
+  Loaded at runtime by OfficeInstallerGUI.ps1 (not compiled). Keep it in the
+  same folder as the script; the script also embeds an identical inline copy.
+
+  Layout follows the visual UI reference:
+    Tab 1  Main Window            — product/edition, architecture, apps, channel, version
+    Tab 2  Utilities and Settings — launch Office apps, diagnostics, log panel
+    Tab 3  Download Office        — download with live progress, create ISO
+    Tab 4  About                  — description, docs, paths, optional KMS
+
+  Theme: two ResourceDictionaries (LightTheme / DarkTheme). The LAST dictionary
+  in the merged collection wins, so DarkTheme (last) is the active default. The
+  script swaps which one is active by re-ordering the collection; all themeable
+  colors use {DynamicResource ...} so they re-resolve on swap.
+-->
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Office Installer GUI"
-        Height="760" Width="1000"
-        MinHeight="480" MinWidth="660"
+        Title="OfficeInstallerGUI"
+        Height="780" Width="1040"
+        MinHeight="540" MinWidth="720"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource WindowBackground}"
         FontFamily="Segoe UI" FontSize="13"
@@ -202,6 +242,7 @@ $script:InlineXaml = @'
     <Window.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
+                <!-- Light theme (defined first; DarkTheme below is the active default) -->
                 <ResourceDictionary x:Key="LightTheme">
                     <SolidColorBrush x:Key="WindowBackground" Color="#F5F5F5"/>
                     <SolidColorBrush x:Key="PanelBackground" Color="#FFFFFF"/>
@@ -220,6 +261,7 @@ $script:InlineXaml = @'
                     <SolidColorBrush x:Key="TabSelected" Color="#F5F5F5"/>
                     <SolidColorBrush x:Key="HyperlinkBrush" Color="#0066CC"/>
                 </ResourceDictionary>
+                <!-- Dark theme (default) -->
                 <ResourceDictionary x:Key="DarkTheme">
                     <SolidColorBrush x:Key="WindowBackground" Color="#1E1E1E"/>
                     <SolidColorBrush x:Key="PanelBackground" Color="#252526"/>
@@ -239,6 +281,8 @@ $script:InlineXaml = @'
                     <SolidColorBrush x:Key="HyperlinkBrush" Color="#4FC1FF"/>
                 </ResourceDictionary>
             </ResourceDictionary.MergedDictionaries>
+
+            <!-- Primary action button (orange accent) -->
             <Style x:Key="PrimaryButton" TargetType="Button">
                 <Setter Property="Background" Value="{DynamicResource AccentBrush}"/>
                 <Setter Property="Foreground" Value="White"/>
@@ -265,6 +309,8 @@ $script:InlineXaml = @'
                     </Setter.Value>
                 </Setter>
             </Style>
+
+            <!-- Secondary action button (neutral) -->
             <Style x:Key="SecondaryButton" TargetType="Button">
                 <Setter Property="Background" Value="{DynamicResource ControlBackground}"/>
                 <Setter Property="Foreground" Value="{DynamicResource TextForeground}"/>
@@ -292,6 +338,16 @@ $script:InlineXaml = @'
                     </Setter.Value>
                 </Setter>
             </Style>
+
+            <!-- Utility tile button (app launchers / diagnostics) -->
+            <Style x:Key="UtilityButton" TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                <Setter Property="MinWidth" Value="120"/>
+                <Setter Property="MinHeight" Value="40"/>
+                <Setter Property="Margin" Value="4"/>
+                <Setter Property="Padding" Value="10,6"/>
+            </Style>
+
+            <!-- Tab control / tab item styling -->
             <Style TargetType="TabControl">
                 <Setter Property="Background" Value="{DynamicResource WindowBackground}"/>
                 <Setter Property="BorderThickness" Value="0"/>
@@ -318,145 +374,298 @@ $script:InlineXaml = @'
                     </Setter.Value>
                 </Setter>
             </Style>
+
+            <!-- Field label style -->
             <Style x:Key="FieldLabel" TargetType="TextBlock">
                 <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
                 <Setter Property="FontSize" Value="12"/>
                 <Setter Property="Margin" Value="0,8,0,2"/>
             </Style>
+
+            <!-- Section header style -->
+            <Style x:Key="SectionHeader" TargetType="TextBlock">
+                <Setter Property="Foreground" Value="{DynamicResource TextForeground}"/>
+                <Setter Property="FontSize" Value="15"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+                <Setter Property="Margin" Value="0,10,0,4"/>
+            </Style>
         </ResourceDictionary>
     </Window.Resources>
+
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
+
         <TabControl x:Name="MainTabs" Grid.Row="0">
-            <TabItem Header="Install">
+
+            <!-- ================= TAB 1: MAIN WINDOW (Install) ================= -->
+            <TabItem Header="Main Window">
                 <Grid Margin="12">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="190"/>
+                        <ColumnDefinition Width="200"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-                    <StackPanel Grid.Column="0" Margin="0,8,16,0" VerticalAlignment="Top">
+
+                    <!-- Left column: branding + primary actions -->
+                    <StackPanel Grid.Column="0" Margin="0,8,16,0">
                         <Border Width="110" Height="110" CornerRadius="18" Background="{DynamicResource AccentBrush}" HorizontalAlignment="Left">
                             <TextBlock Text="OFFICE" Foreground="White" FontSize="18" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
-                        <TextBlock Text="Office Installer" FontSize="20" FontWeight="Bold" Foreground="{DynamicResource TextForeground}" Margin="0,14,0,0" TextWrapping="Wrap"/>
-                        <TextBlock Text="A GUI front-end for Microsoft's official Office Deployment Tool. It generates configuration.xml and runs setup.exe for you." FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                        <CheckBox x:Name="InstallOfflineCheck" Content="Use Offline Installation" Foreground="{DynamicResource TextForeground}" Margin="0,16,0,0"/>
+                        <StackPanel x:Name="OfflineSourcePanel" Orientation="Horizontal" Margin="20,4,0,0" Visibility="Collapsed">
+                            <TextBox x:Name="InstallOfflinePathBox" Width="130" Height="26" VerticalContentAlignment="Center" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                            <Button x:Name="InstallOfflineBrowseBtn" Content="..." Style="{StaticResource SecondaryButton}" Padding="8,4" Margin="4,0,0,0"/>
+                        </StackPanel>
+                        <Button x:Name="InstallBtn" Content="Install Office" Style="{StaticResource PrimaryButton}" Margin="0,16,0,0" MinWidth="160"/>
+                        <Button x:Name="UninstallBtn" Content="Uninstall Office" Style="{StaticResource SecondaryButton}" Margin="0,8,0,0" MinWidth="160"/>
+                        <Button x:Name="StatusBtn" Content="Check Status" Style="{StaticResource SecondaryButton}" Margin="0,8,0,0" MinWidth="160"/>
+                        <ProgressBar x:Name="InstallProgress" Height="6" IsIndeterminate="True" Visibility="Collapsed" Margin="4,12,4,0" Foreground="{DynamicResource AccentBrush}" Background="{DynamicResource ControlBackground}"/>
                     </StackPanel>
+
+                    <!-- Right column: product configuration -->
                     <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
                         <StackPanel>
-                            <TextBlock Text="Edition" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="InstallEditionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
-                            <TextBlock Text="Architecture" Style="{StaticResource FieldLabel}"/>
-                            <StackPanel Orientation="Horizontal">
-                                <RadioButton x:Name="InstallArch64Radio" Content="64-bit (x64)" IsChecked="True" Foreground="{DynamicResource TextForeground}" Margin="0,0,20,0"/>
-                                <RadioButton x:Name="InstallArch32Radio" Content="32-bit (x86)" Foreground="{DynamicResource TextForeground}"/>
-                            </StackPanel>
-                            <CheckBox x:Name="InstallIndividualCheck" Content="Install individual apps instead of the full suite" Foreground="{DynamicResource TextForeground}" Margin="0,10,0,0"/>
-                            <StackPanel x:Name="YearSelectorPanel" Orientation="Horizontal" Margin="24,4,0,0" Visibility="Collapsed">
-                                <TextBlock Text="Project / Visio year:" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center"/>
-                                <ComboBox x:Name="InstallYearCombo" Width="90" Height="26" Margin="8,0,0,0" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
-                            </StackPanel>
-                            <TextBlock x:Name="AppsLabel" Text="Applications (uncheck to exclude from the suite)" Style="{StaticResource FieldLabel}"/>
-                            <Border x:Name="SuiteAppsBorder" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="120">
-                                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                    <ItemsControl x:Name="SuiteAppsList"/>
-                                </ScrollViewer>
-                            </Border>
-                            <Border x:Name="IndividualAppsBorder" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="120" Visibility="Collapsed">
-                                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                    <ItemsControl x:Name="IndividualAppsList"/>
-                                </ScrollViewer>
-                            </Border>
+                            <TextBlock Text="Office Product" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource TextForeground}"/>
+
+                            <!-- Product Family + Architecture -->
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Product Family" Style="{StaticResource FieldLabel}"/>
+                                    <ComboBox x:Name="InstallFamilyCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="24,0,0,0">
+                                    <TextBlock Text="Architecture" Style="{StaticResource FieldLabel}"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <RadioButton x:Name="InstallArch64Radio" Content="x64" IsChecked="True" Foreground="{DynamicResource TextForeground}" Margin="0,0,20,0"/>
+                                        <RadioButton x:Name="InstallArch32Radio" Content="x86" Foreground="{DynamicResource TextForeground}"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Grid>
+
+                            <!-- Product / Edition + Single Products toggle -->
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Product / Edition" Style="{StaticResource FieldLabel}"/>
+                                    <ComboBox x:Name="InstallEditionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                </StackPanel>
+                                <CheckBox x:Name="InstallIndividualCheck" Content="Single Products" Grid.Column="1" Margin="24,26,0,0" Foreground="{DynamicResource TextForeground}"/>
+                            </Grid>
+
+                            <!-- Dual application checklists -->
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock x:Name="SuiteLabel" Text="Suite Applications" Style="{StaticResource FieldLabel}"/>
+                                    <Border x:Name="SuiteAppsBorder" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="150">
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                            <ItemsControl x:Name="SuiteAppsList"/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="16,0,0,0">
+                                    <TextBlock x:Name="SingleLabel" Text="Single Products" Style="{StaticResource FieldLabel}"/>
+                                    <Border x:Name="IndividualAppsBorder" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="150" Visibility="Collapsed">
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                            <ItemsControl x:Name="IndividualAppsList"/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
+
+                            <!-- Channel -->
                             <TextBlock Text="Channel" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="InstallChannelCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="InstallChannelCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                <Button x:Name="ChannelInfoBtn" Content="?" Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource SecondaryButton}" Padding="10,4" ToolTip="Show channel information"/>
+                            </Grid>
+
+                            <!-- Product Version -->
+                            <TextBlock Text="Product Version" Style="{StaticResource FieldLabel}"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="InstallVersionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                <Button x:Name="VersionSelectBtn" Content="Select..." Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource SecondaryButton}" Padding="10,4"/>
+                            </Grid>
+
+                            <!-- Languages -->
                             <TextBlock Text="Languages" Style="{StaticResource FieldLabel}"/>
-                            <Border BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="130">
+                            <Border BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="120">
                                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                                     <ItemsControl x:Name="InstallLanguagesList"/>
                                 </ScrollViewer>
                             </Border>
-                            <CheckBox x:Name="InstallOfflineCheck" Content="Use offline source (install from a folder downloaded via the Download tab)" Foreground="{DynamicResource TextForeground}" Margin="0,10,0,0"/>
-                            <StackPanel x:Name="OfflineSourcePanel" Orientation="Horizontal" Margin="24,4,0,0" Visibility="Collapsed">
-                                <TextBox x:Name="InstallOfflinePathBox" Width="280" Height="26" VerticalContentAlignment="Center" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
-                                <Button x:Name="InstallOfflineBrowseBtn" Content="Browse..." Style="{StaticResource SecondaryButton}" Padding="10,4"/>
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
-                                <Button x:Name="InstallBtn" Content="Install Office" Style="{StaticResource PrimaryButton}" MinWidth="140"/>
-                                <Button x:Name="UninstallBtn" Content="Uninstall Office" Style="{StaticResource SecondaryButton}" MinWidth="140"/>
-                                <Button x:Name="StatusBtn" Content="Check Installed Status" Style="{StaticResource SecondaryButton}" MinWidth="150"/>
-                            </StackPanel>
-                            <ProgressBar x:Name="InstallProgress" Height="6" IsIndeterminate="True" Visibility="Collapsed" Margin="4,8,4,0" Foreground="{DynamicResource AccentBrush}" Background="{DynamicResource ControlBackground}"/>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
             </TabItem>
-            <TabItem Header="Download / Offline Package">
+
+            <!-- ================= TAB 2: UTILITIES AND SETTINGS ================= -->
+            <TabItem Header="Utilities and Settings">
                 <Grid Margin="12">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
+
                     <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
                         <StackPanel>
-                            <TextBlock x:Name="DownloadVersionLabel" Text="Office Deployment Tool version: (not yet resolved)" Foreground="{DynamicResource TextSecondary}" FontSize="12" Margin="0,0,0,6"/>
-                            <TextBlock Text="Edition" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="DownloadEditionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
-                            <TextBlock Text="Architecture" Style="{StaticResource FieldLabel}"/>
+                            <TextBlock Text="Office Utilities" Style="{StaticResource SectionHeader}"/>
+                            <UniformGrid Columns="4">
+                                <Button x:Name="LaunchWordBtn" Content="Word" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchExcelBtn" Content="Excel" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchPowerPointBtn" Content="PowerPoint" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchOutlookBtn" Content="Outlook" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchOneNoteBtn" Content="OneNote" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchAccessBtn" Content="Access" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchPublisherBtn" Content="Publisher" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchProjectBtn" Content="Project" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="LaunchVisioBtn" Content="Visio" Style="{StaticResource UtilityButton}"/>
+                            </UniformGrid>
+
+                            <TextBlock Text="Office Diagnostics" Style="{StaticResource SectionHeader}"/>
                             <StackPanel Orientation="Horizontal">
-                                <RadioButton x:Name="DownloadArch64Radio" Content="64-bit (x64)" IsChecked="True" Foreground="{DynamicResource TextForeground}" Margin="0,0,20,0"/>
-                                <RadioButton x:Name="DownloadArch32Radio" Content="32-bit (x86)" Foreground="{DynamicResource TextForeground}"/>
+                                <Button x:Name="CheckInstallBtn" Content="Check Installation" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="CheckOdtBtn" Content="Check ODT" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="OpenLogFolderBtn" Content="Open Log Folder" Style="{StaticResource UtilityButton}"/>
+                                <Button x:Name="OpenDownloadFolderBtn" Content="Open Download Folder" Style="{StaticResource UtilityButton}"/>
                             </StackPanel>
-                            <TextBlock Text="Channel" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="DownloadChannelCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
-                            <TextBlock Text="Languages" Style="{StaticResource FieldLabel}"/>
-                            <Border BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="110">
-                                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                    <ItemsControl x:Name="DownloadLanguagesList"/>
-                                </ScrollViewer>
-                            </Border>
-                            <TextBlock Text="Destination folder (for the downloaded source files)" Style="{StaticResource FieldLabel}"/>
-                            <StackPanel Orientation="Horizontal">
-                                <TextBox x:Name="DownloadDestBox" Width="360" Height="26" VerticalContentAlignment="Center" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
-                                <Button x:Name="DownloadDestBrowseBtn" Content="Browse..." Style="{StaticResource SecondaryButton}" Padding="10,4"/>
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                                <Button x:Name="DownloadBtn" Content="Download Office (offline source)" Style="{StaticResource PrimaryButton}" MinWidth="220"/>
-                                <Button x:Name="CreateIsoBtn" Content="Create ISO from downloaded source" Style="{StaticResource SecondaryButton}" MinWidth="220" IsEnabled="False"/>
-                            </StackPanel>
-                            <ProgressBar x:Name="DownloadProgress" Height="6" IsIndeterminate="True" Visibility="Collapsed" Margin="4,8,4,0" Foreground="{DynamicResource AccentBrush}" Background="{DynamicResource ControlBackground}"/>
                         </StackPanel>
                     </ScrollViewer>
+
+                    <!-- Log / Output panel -->
                     <Grid Grid.Row="1" Margin="0,10,0,0">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
-                        <TextBlock Text="Console" Style="{StaticResource FieldLabel}" Margin="0,0,0,4"/>
-                        <RichTextBox x:Name="DownloadLogBox" Grid.Row="1" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Background="{DynamicResource LogBackground}" Foreground="{DynamicResource LogText}" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" FontFamily="Consolas" FontSize="12"/>
+                        <TextBlock Text="Log / Output" Style="{StaticResource FieldLabel}" Margin="0,0,0,4"/>
+                        <RichTextBox x:Name="LogBox" Grid.Row="1" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Background="{DynamicResource LogBackground}" Foreground="{DynamicResource LogText}" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" FontFamily="Consolas" FontSize="12"/>
                     </Grid>
                 </Grid>
             </TabItem>
-            <TabItem Header="About / Settings">
+
+            <!-- ================= TAB 3: DOWNLOAD OFFICE ================= -->
+            <TabItem Header="Download Office">
+                <Grid Margin="12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock x:Name="DownloadVersionLabel" Text="Office Deployment Tool version: (not yet resolved)" Foreground="{DynamicResource TextSecondary}" FontSize="12" Margin="0,0,0,6"/>
+
+                            <!-- Product + Architecture + Languages -->
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Product" Style="{StaticResource FieldLabel}"/>
+                                    <ComboBox x:Name="DownloadEditionCombo" Width="220" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="16,0,0,0">
+                                    <TextBlock Text="Architecture" Style="{StaticResource FieldLabel}"/>
+                                    <ComboBox x:Name="DownloadArchCombo" Width="90" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Margin="16,0,0,0">
+                                    <TextBlock Text="Languages" Style="{StaticResource FieldLabel}"/>
+                                    <Border BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="110">
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                            <ItemsControl x:Name="DownloadLanguagesList"/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
+
+                            <!-- Product Version -->
+                            <TextBlock Text="Product Version" Style="{StaticResource FieldLabel}"/>
+                            <ComboBox x:Name="DownloadVersionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+
+                            <!-- Channel -->
+                            <TextBlock Text="Channel" Style="{StaticResource FieldLabel}"/>
+                            <ComboBox x:Name="DownloadChannelCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+
+                            <!-- Destination folder -->
+                            <TextBlock Text="Destination folder" Style="{StaticResource FieldLabel}"/>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBox x:Name="DownloadDestBox" Width="360" Height="26" VerticalContentAlignment="Center" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                <Button x:Name="DownloadDestBrowseBtn" Content="Browse..." Style="{StaticResource SecondaryButton}" Padding="10,4"/>
+                            </StackPanel>
+
+                            <!-- Download / Cancel -->
+                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                <Button x:Name="DownloadBtn" Content="Download Office" Style="{StaticResource PrimaryButton}" MinWidth="200"/>
+                                <Button x:Name="CancelDownloadBtn" Content="Cancel Download" Style="{StaticResource SecondaryButton}" MinWidth="160" Visibility="Collapsed"/>
+                            </StackPanel>
+
+                            <!-- Progress -->
+                            <TextBlock x:Name="DownloadProgressLabel" Text="Download Progress" Style="{StaticResource FieldLabel}" Margin="0,12,0,2"/>
+                            <ProgressBar x:Name="DownloadProgress" Height="8" IsIndeterminate="True" Visibility="Collapsed" Foreground="{DynamicResource AccentBrush}" Background="{DynamicResource ControlBackground}"/>
+                            <TextBlock x:Name="DownloadProgressText" Text="" Foreground="{DynamicResource TextForeground}" FontSize="12" Margin="0,4,0,0"/>
+                            <TextBlock x:Name="DownloadSpeedText" Text="" Foreground="{DynamicResource TextSecondary}" FontSize="12" Margin="0,2,0,0"/>
+
+                            <!-- Create ISO -->
+                            <Button x:Name="CreateIsoBtn" Content="Create ISO" Style="{StaticResource SecondaryButton}" MinWidth="200" Margin="4,12,4,0" HorizontalAlignment="Left" IsEnabled="False"/>
+
+                            <!-- One-stream note (ODT has no such switch; informational only) -->
+                            <CheckBox x:Name="DownloadSingleStreamCheck" Content="Download files in one stream" Foreground="{DynamicResource TextForeground}" Margin="0,10,0,0" ToolTip="ODT does not expose a single-vs-multi-thread download switch; this option is retained for UI parity and does not change ODT behavior."/>
+
+                            <!-- Status -->
+                            <TextBlock x:Name="DownloadStatusText" Text="Status: Ready" Foreground="{DynamicResource TextSecondary}" FontSize="12" Margin="0,8,0,0"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </TabItem>
+
+            <!-- ================= TAB 4: ABOUT ================= -->
+            <TabItem Header="About">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="20">
-                        <TextBlock Text="Office Installer GUI" FontSize="26" FontWeight="Bold" Foreground="{DynamicResource TextForeground}"/>
+                        <TextBlock Text="OfficeInstallerGUI" FontSize="26" FontWeight="Bold" Foreground="{DynamicResource TextForeground}"/>
                         <TextBlock x:Name="AboutVersionText" Text="Version 1.0.0" FontSize="13" Foreground="{DynamicResource TextSecondary}" Margin="0,4,0,12"/>
+
                         <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextForeground}" FontSize="13" Margin="0,0,0,8">
                             This application is a GUI wrapper around Microsoft's official Office Deployment Tool (ODT).
                             It does not itself download or bundle Office; it only generates a valid configuration.xml
                             and invokes setup.exe. All Office files come directly from Microsoft's CDN when you click
                             Download or Install.
                         </TextBlock>
+
                         <TextBlock Margin="0,4,0,4" Foreground="{DynamicResource TextForeground}">
                             <Hyperlink x:Name="OdtDocsLink" NavigateUri="https://learn.microsoft.com/en-us/deployoffice/overview-office-deployment-tool" Foreground="{DynamicResource HyperlinkBrush}">
                                 Office Deployment Tool documentation (learn.microsoft.com)
                             </Hyperlink>
                         </TextBlock>
+
                         <TextBlock Text="Local files" Style="{StaticResource FieldLabel}" Margin="0,12,0,2"/>
                         <TextBlock x:Name="AboutCachePath" Text="" Foreground="{DynamicResource TextForeground}" FontSize="12" TextWrapping="Wrap"/>
                         <TextBlock x:Name="AboutLogPath" Text="" Foreground="{DynamicResource TextForeground}" FontSize="12" TextWrapping="Wrap"/>
+
+                        <!-- Optional KMS section (hidden unless the checkbox is checked) -->
                         <CheckBox x:Name="KmsToggleCheck" Content="I manage volume licensing for this organization" Foreground="{DynamicResource TextForeground}" Margin="0,16,0,0"/>
                         <Border x:Name="KmsSection" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="10" Margin="0,8,0,0" Visibility="Collapsed">
                             <StackPanel>
@@ -477,9 +686,11 @@ $script:InlineXaml = @'
                 </ScrollViewer>
             </TabItem>
         </TabControl>
+
+        <!-- Bottom bar: theme toggle + status -->
         <Border Grid.Row="1" Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="0,1,0,0" Padding="12,6">
             <DockPanel>
-                <CheckBox x:Name="DarkThemeCheck" Content="Dark theme" IsChecked="True" Foreground="{DynamicResource TextForeground}" DockPanel.Dock="Left" VerticalAlignment="Center"/>
+                <CheckBox x:Name="DarkThemeCheck" Content="Use Dark Theme" IsChecked="True" Foreground="{DynamicResource TextForeground}" DockPanel.Dock="Left" VerticalAlignment="Center"/>
                 <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextSecondary}" TextAlignment="Right" VerticalAlignment="Center" Text="Ready"/>
             </DockPanel>
         </Border>
@@ -504,14 +715,14 @@ function Get-Ui {
 function Add-ConsoleLine {
     <#
     .SYNOPSIS
-        Appends a colored line to the on-screen console panel (Tab 2).
+        Appends a colored line to the on-screen log panel (Utilities tab).
     .PARAMETER Message
         Text to display.
     .PARAMETER Level
         INFO | OK | WARN | ERROR — controls the color (theme-aware).
     #>
     param([string]$Message, [string]$Level = 'INFO')
-    $rtb = Get-Ui 'DownloadLogBox'
+    $rtb = Get-Ui 'LogBox'
     if (-not $rtb) { return }
     $rtb.Dispatcher.Invoke([Action]{
         $para = New-Object System.Windows.Documents.Paragraph
@@ -734,6 +945,7 @@ function New-OdtConfigXml {
         [string[]]$IndividualApps,
         [switch]$UseIndividualApps,
         [string]$SourcePath,
+        [string]$Version,
         [ValidateSet('Add', 'Remove', 'RemoveAll')]
         [string]$Action = 'Add'
     )
@@ -785,6 +997,11 @@ function New-OdtConfigXml {
                     $langEl.SetAttribute('ID', $lang)
                     [void]$product.AppendChild($langEl)
                 }
+                if (-not [string]::IsNullOrWhiteSpace($Version)) {
+                    $verEl = $xml.CreateElement('Version')
+                    $verEl.InnerText = $Version
+                    [void]$product.AppendChild($verEl)
+                }
                 [void]$add.AppendChild($product)
             }
         } else {
@@ -794,6 +1011,11 @@ function New-OdtConfigXml {
                 $langEl = $xml.CreateElement('Language')
                 $langEl.SetAttribute('ID', $lang)
                 [void]$product.AppendChild($langEl)
+            }
+            if (-not [string]::IsNullOrWhiteSpace($Version)) {
+                $verEl = $xml.CreateElement('Version')
+                $verEl.InnerText = $Version
+                [void]$product.AppendChild($verEl)
             }
             foreach ($appId in $ExcludedApps) {
                 $exclude = $xml.CreateElement('ExcludeApp')
@@ -1165,6 +1387,11 @@ function Update-FromBackgroundJob {
         Tail-OdtLog -LogDir $script:Job.OdtLogDir
     }
 
+    # Sample download progress (folder size + speed) while a download runs.
+    if ($script:Job.Kind -eq 'download') {
+        Update-DownloadProgress
+    }
+
     # Completion?
     if ($script:Job.AsyncResult -and $script:Job.AsyncResult.IsCompleted) {
         $exitCode = 0
@@ -1202,7 +1429,7 @@ function Update-FromBackgroundJob {
                     [System.Windows.MessageBox]::Show($script:Window, "Office install finished.`n`n$summary", 'Install Complete', 'OK', 'Information') | Out-Null
                 } else {
                     Write-Log "Install failed (exit code $exitCode). See the console log for details." 'ERROR'
-                    [System.Windows.MessageBox]::Show($script:Window, "Office install failed with exit code $exitCode. See the console log for details.", 'Install Failed', 'OK', 'Error') | Out-Null
+                    Show-ErrorDialog -Operation 'Install' -ExitCode $exitCode -Details 'Unable to complete the Office Deployment Tool install operation.'
                 }
             }
             'uninstall' {
@@ -1211,7 +1438,7 @@ function Update-FromBackgroundJob {
                     [System.Windows.MessageBox]::Show($script:Window, 'Office uninstall finished.', 'Uninstall Complete', 'OK', 'Information') | Out-Null
                 } else {
                     Write-Log "Uninstall failed (exit code $exitCode)." 'ERROR'
-                    [System.Windows.MessageBox]::Show($script:Window, "Office uninstall failed with exit code $exitCode. See the console log for details.", 'Uninstall Failed', 'OK', 'Error') | Out-Null
+                    Show-ErrorDialog -Operation 'Uninstall' -ExitCode $exitCode -Details 'Unable to complete the Office Deployment Tool uninstall operation.'
                 }
             }
             'download' {
@@ -1219,9 +1446,12 @@ function Update-FromBackgroundJob {
                     $script:LastDownloadFolder = $script:LastDownloadDest
                     $isoBtn = Get-Ui 'CreateIsoBtn'
                     if ($isoBtn) { $isoBtn.IsEnabled = $true }
+                    Set-DownloadUiState 'complete'
                     Write-Log "Download complete. Source files are in: $script:LastDownloadFolder" 'OK'
                 } else {
+                    Set-DownloadUiState 'failed'
                     Write-Log "Download failed (exit code $exitCode)." 'ERROR'
+                    Show-ErrorDialog -Operation 'Download' -ExitCode $exitCode -Details 'Unable to complete the Office Deployment Tool download operation.'
                 }
             }
             'iso' {
@@ -1229,6 +1459,7 @@ function Update-FromBackgroundJob {
                     Write-Log 'ISO creation finished.' 'OK'
                 } else {
                     Write-Log 'ISO creation failed. See the console log for details.' 'ERROR'
+                    Show-ErrorDialog -Operation 'ISO creation' -ExitCode $exitCode -Details 'Unable to create the ISO image.'
                 }
             }
             'kms' {
@@ -1283,12 +1514,41 @@ function Show-FolderPicker {
 }
 
 function Populate-EditionCombo {
-    param($Combo)
+    param($Combo, [string]$FamilyName)
     $Combo.Items.Clear()
-    foreach ($e in $script:Editions) {
+    $editions = $script:Editions
+    if ($FamilyName) {
+        $family = $script:ProductFamilies | Where-Object { $_.Name -eq $FamilyName }
+        if ($family) { $editions = @($script:Editions | Where-Object { $family.Editions -contains $_.Id }) }
+    }
+    foreach ($e in $editions) {
         $item = New-Object System.Windows.Controls.ComboBoxItem
         $item.Content = $e.Name
         $item.Tag = $e.Id
+        [void]$Combo.Items.Add($item)
+    }
+    $Combo.SelectedIndex = 0
+}
+
+function Populate-FamilyCombo {
+    param($Combo)
+    $Combo.Items.Clear()
+    foreach ($f in $script:ProductFamilies) {
+        $item = New-Object System.Windows.Controls.ComboBoxItem
+        $item.Content = $f.Name
+        $item.Tag = $f.Name
+        [void]$Combo.Items.Add($item)
+    }
+    $Combo.SelectedIndex = 0
+}
+
+function Populate-VersionCombo {
+    param($Combo)
+    $Combo.Items.Clear()
+    foreach ($v in $script:ProductVersions) {
+        $item = New-Object System.Windows.Controls.ComboBoxItem
+        $item.Content = $v.Name
+        $item.Tag = $v.Id
         [void]$Combo.Items.Add($item)
     }
     $Combo.SelectedIndex = 0
@@ -1468,13 +1728,12 @@ function Get-ExcludedApps {
 function Get-SelectedIndividualApps {
     <#
     .SYNOPSIS
-        Returns the resolved Product IDs of checked individual apps, substituting
-        the selected Project/Visio year into the {Year} placeholder.
+        Returns the resolved Product IDs of checked individual apps. Project/Visio
+        IDs use the 2021 volume IDs (the most recent LTSC); the UI has no year
+        selector, so the year is fixed at 2021.
     #>
     $list = Get-Ui 'IndividualAppsList'
-    $yearCombo = Get-Ui 'InstallYearCombo'
     $year = '2021'
-    if ($yearCombo -and $yearCombo.SelectedItem) { $year = $yearCombo.SelectedItem.Tag }
     $result = @()
     foreach ($item in $list.Items) {
         if ($item.IsChecked) {
@@ -1534,6 +1793,437 @@ function Test-VolumeChannelMismatch {
     return $true
 }
 
+function Get-ThemeColor {
+    <#
+    .SYNOPSIS
+        Returns the active theme brush for a resource key (used by code-built dialogs).
+    #>
+    param([string]$Key)
+    $dict = if ($script:Settings.DarkTheme) { $script:DarkThemeDict } else { $script:LightThemeDict }
+    if ($dict -and $dict.Contains($Key)) { return $dict[$Key] }
+    return [System.Windows.Media.Brushes]::White
+}
+
+function Get-SelectedVersion {
+    <#
+    .SYNOPSIS
+        Returns the currently selected product version (16.0.x.y) or $null.
+    #>
+    return $script:SelectedVersion
+}
+
+function Show-ProductVersionDialog {
+    <#
+    .SYNOPSIS
+        Shows the "Select Product Version" dialog (presets + custom, validated).
+    .RETURNS
+        Selected version string (16.0.x.y), or $null if cancelled.
+    #>
+    $bg = Get-ThemeColor 'WindowBackground'
+    $fg = Get-ThemeColor 'TextForeground'
+    $ctrlBg = Get-ThemeColor 'ControlBackground'
+    $ctrlBorder = Get-ThemeColor 'ControlBorder'
+    $err = Get-ThemeColor 'ErrorText'
+    $accent = $script:Window.FindResource('AccentBrush')
+
+    $dlg = New-Object System.Windows.Window
+    $dlg.Title = 'Select Product Version'
+    $dlg.Width = 460
+    $dlg.Height = 360
+    $dlg.WindowStartupLocation = 'CenterOwner'
+    $dlg.Owner = $script:Window
+    $dlg.Background = $bg
+    $dlg.Foreground = $fg
+    $dlg.FontFamily = 'Segoe UI'
+    $dlg.FontSize = 13
+
+    $root = New-Object System.Windows.Controls.StackPanel
+    $root.Margin = New-Object System.Windows.Thickness(16)
+
+    $title = New-Object System.Windows.Controls.TextBlock
+    $title.Text = 'Product Version'
+    $title.FontSize = 15
+    $title.FontWeight = 'SemiBold'
+    $title.Foreground = $fg
+    [void]$root.Children.Add($title)
+
+    $presets = @('16.0.20228.20186 — Windows 10/11', '16.0.15601.20538 — Windows 8/8.1', '16.0.12527.22286 — Windows 7')
+    $radios = @()
+    foreach ($p in $presets) {
+        $rb = New-Object System.Windows.Controls.RadioButton
+        $rb.Content = $p
+        $rb.Foreground = $fg
+        $rb.Margin = New-Object System.Windows.Thickness(0, 8, 0, 0)
+        [void]$root.Children.Add($rb)
+        $radios += $rb
+    }
+    $radios[0].IsChecked = $true
+
+    $customRb = New-Object System.Windows.Controls.RadioButton
+    $customRb.Content = 'Custom Version'
+    $customRb.Foreground = $fg
+    $customRb.Margin = New-Object System.Windows.Thickness(0, 8, 0, 0)
+    [void]$root.Children.Add($customRb)
+
+    $customBox = New-Object System.Windows.Controls.TextBox
+    $customBox.Width = 220
+    $customBox.Height = 26
+    $customBox.Margin = New-Object System.Windows.Thickness(24, 4, 0, 0)
+    $customBox.HorizontalAlignment = 'Left'
+    $customBox.Background = $ctrlBg
+    $customBox.Foreground = $fg
+    $customBox.BorderBrush = $ctrlBorder
+    $customBox.Text = '16.0.xxxxx.xxxxx'
+    [void]$root.Children.Add($customBox)
+
+    $errorText = New-Object System.Windows.Controls.TextBlock
+    $errorText.Foreground = $err
+    $errorText.FontSize = 12
+    $errorText.Margin = New-Object System.Windows.Thickness(24, 4, 0, 0)
+    $errorText.Text = ''
+    [void]$root.Children.Add($errorText)
+
+    $btnPanel = New-Object System.Windows.Controls.StackPanel
+    $btnPanel.Orientation = 'Horizontal'
+    $btnPanel.HorizontalAlignment = 'Right'
+    $btnPanel.Margin = New-Object System.Windows.Thickness(0, 16, 0, 0)
+
+    $okBtn = New-Object System.Windows.Controls.Button
+    $okBtn.Content = 'OK'
+    $okBtn.Width = 80
+    $okBtn.Margin = New-Object System.Windows.Thickness(0, 0, 8, 0)
+    $okBtn.Background = $accent
+    $okBtn.Foreground = [System.Windows.Media.Brushes]::White
+    $okBtn.FontWeight = 'SemiBold'
+    [void]$btnPanel.Children.Add($okBtn)
+
+    $cancelBtn = New-Object System.Windows.Controls.Button
+    $cancelBtn.Content = 'Cancel'
+    $cancelBtn.Width = 80
+    $cancelBtn.Background = $ctrlBg
+    $cancelBtn.Foreground = $fg
+    $cancelBtn.BorderBrush = $ctrlBorder
+    [void]$btnPanel.Children.Add($cancelBtn)
+
+    [void]$root.Children.Add($btnPanel)
+    $dlg.Content = $root
+
+    $okBtn.Add_Click({
+        $selected = $null
+        if ($customRb.IsChecked) {
+            $selected = $customBox.Text.Trim()
+            if ($selected -notmatch '^16\.0\.\d+\.\d+$') {
+                $errorText.Text = 'Invalid Office version format. Expected: 16.0.<build>.<revision>'
+                return
+            }
+        } else {
+            for ($i = 0; $i -lt $radios.Count; $i++) {
+                if ($radios[$i].IsChecked) {
+                    $selected = ($presets[$i] -split ' ')[0]
+                    break
+                }
+            }
+        }
+        $script:SelectedVersion = $selected
+        $dlg.DialogResult = $true
+    })
+    $cancelBtn.Add_Click({ $dlg.DialogResult = $false })
+
+    $dlg.ShowDialog() | Out-Null
+    if ($dlg.DialogResult) { return $script:SelectedVersion }
+    return $null
+}
+
+function Show-ChannelInfoDialog {
+    <#
+    .SYNOPSIS
+        Shows the "Office Update Channels" information dialog.
+    #>
+    $bg = Get-ThemeColor 'WindowBackground'
+    $fg = Get-ThemeColor 'TextForeground'
+    $sec = Get-ThemeColor 'TextSecondary'
+    $ctrlBg = Get-ThemeColor 'ControlBackground'
+    $ctrlBorder = Get-ThemeColor 'ControlBorder'
+
+    $dlg = New-Object System.Windows.Window
+    $dlg.Title = 'Office Update Channels'
+    $dlg.Width = 460
+    $dlg.Height = 480
+    $dlg.WindowStartupLocation = 'CenterOwner'
+    $dlg.Owner = $script:Window
+    $dlg.Background = $bg
+    $dlg.Foreground = $fg
+    $dlg.FontFamily = 'Segoe UI'
+    $dlg.FontSize = 13
+
+    $root = New-Object System.Windows.Controls.StackPanel
+    $root.Margin = New-Object System.Windows.Thickness(16)
+
+    $channels = @(
+        @{ Name = 'Current'; Desc = 'Latest broadly available Office updates.' },
+        @{ Name = 'Monthly Enterprise'; Desc = 'Monthly update cadence intended for enterprise deployment.' },
+        @{ Name = 'Semi-Annual'; Desc = 'Longer validation cycle for enterprise environments.' },
+        @{ Name = 'Semi-Annual Preview'; Desc = 'Preview channel for upcoming Semi-Annual updates.' },
+        @{ Name = 'PerpetualVL2019'; Desc = 'Office LTSC 2019 volume channel.' },
+        @{ Name = 'PerpetualVL2021'; Desc = 'Office LTSC 2021 volume channel.' },
+        @{ Name = 'PerpetualVL2024'; Desc = 'Office LTSC 2024 volume channel.' }
+    )
+    foreach ($c in $channels) {
+        $name = New-Object System.Windows.Controls.TextBlock
+        $name.Text = $c.Name
+        $name.FontWeight = 'SemiBold'
+        $name.Foreground = $fg
+        $name.Margin = New-Object System.Windows.Thickness(0, 10, 0, 0)
+        [void]$root.Children.Add($name)
+        $desc = New-Object System.Windows.Controls.TextBlock
+        $desc.Text = $c.Desc
+        $desc.Foreground = $sec
+        $desc.FontSize = 12
+        $desc.TextWrapping = 'Wrap'
+        [void]$root.Children.Add($desc)
+    }
+
+    $closeBtn = New-Object System.Windows.Controls.Button
+    $closeBtn.Content = 'Close'
+    $closeBtn.Width = 90
+    $closeBtn.HorizontalAlignment = 'Right'
+    $closeBtn.Margin = New-Object System.Windows.Thickness(0, 16, 0, 0)
+    $closeBtn.Background = $ctrlBg
+    $closeBtn.Foreground = $fg
+    $closeBtn.BorderBrush = $ctrlBorder
+    $closeBtn.Add_Click({ $dlg.Close() })
+    [void]$root.Children.Add($closeBtn)
+
+    $dlg.Content = $root
+    $dlg.ShowDialog() | Out-Null
+}
+
+function Show-ErrorDialog {
+    <#
+    .SYNOPSIS
+        Shows a structured "Operation Failed" dialog with details and log path.
+    .PARAMETER Operation
+        e.g. 'Download', 'Install', 'Uninstall', 'ISO creation'.
+    .PARAMETER ExitCode
+        Process exit code (may be $null).
+    .PARAMETER Details
+        Human-readable failure detail.
+    #>
+    param([string]$Operation, [int]$ExitCode, [string]$Details)
+    $bg = Get-ThemeColor 'WindowBackground'
+    $fg = Get-ThemeColor 'TextForeground'
+    $sec = Get-ThemeColor 'TextSecondary'
+    $err = Get-ThemeColor 'ErrorText'
+    $ctrlBg = Get-ThemeColor 'ControlBackground'
+    $ctrlBorder = Get-ThemeColor 'ControlBorder'
+
+    $dlg = New-Object System.Windows.Window
+    $dlg.Title = 'Operation Failed'
+    $dlg.Width = 480
+    $dlg.Height = 380
+    $dlg.WindowStartupLocation = 'CenterOwner'
+    $dlg.Owner = $script:Window
+    $dlg.Background = $bg
+    $dlg.Foreground = $fg
+    $dlg.FontFamily = 'Segoe UI'
+    $dlg.FontSize = 13
+
+    $root = New-Object System.Windows.Controls.StackPanel
+    $root.Margin = New-Object System.Windows.Thickness(16)
+
+    $warn = New-Object System.Windows.Controls.TextBlock
+    $warn.Text = "⚠  $Operation failed."
+    $warn.FontSize = 18
+    $warn.FontWeight = 'Bold'
+    $warn.Foreground = $err
+    [void]$root.Children.Add($warn)
+
+    $detail = New-Object System.Windows.Controls.TextBlock
+    $detail.Text = "Details:`n$Details"
+    $detail.Foreground = $fg
+    $detail.TextWrapping = 'Wrap'
+    $detail.Margin = New-Object System.Windows.Thickness(0, 12, 0, 0)
+    [void]$root.Children.Add($detail)
+
+    if ($null -ne $ExitCode) {
+        $ec = New-Object System.Windows.Controls.TextBlock
+        $ec.Text = "Exit Code: $ExitCode"
+        $ec.Foreground = $sec
+        $ec.Margin = New-Object System.Windows.Thickness(0, 8, 0, 0)
+        [void]$root.Children.Add($ec)
+    }
+
+    $log = New-Object System.Windows.Controls.TextBlock
+    $log.Text = "Log:`n$script:LogDir"
+    $log.Foreground = $sec
+    $log.FontSize = 12
+    $log.TextWrapping = 'Wrap'
+    $log.Margin = New-Object System.Windows.Thickness(0, 8, 0, 0)
+    [void]$root.Children.Add($log)
+
+    $closeBtn = New-Object System.Windows.Controls.Button
+    $closeBtn.Content = 'Close'
+    $closeBtn.Width = 90
+    $closeBtn.HorizontalAlignment = 'Right'
+    $closeBtn.Margin = New-Object System.Windows.Thickness(0, 16, 0, 0)
+    $closeBtn.Background = $ctrlBg
+    $closeBtn.Foreground = $fg
+    $closeBtn.BorderBrush = $ctrlBorder
+    $closeBtn.Add_Click({ $dlg.Close() })
+    [void]$root.Children.Add($closeBtn)
+
+    $dlg.Content = $root
+    $dlg.ShowDialog() | Out-Null
+}
+
+function Launch-OfficeApp {
+    <#
+    .SYNOPSIS
+        Launches an installed Office application by its executable name.
+    #>
+    param([string]$App)
+    $exeMap = @{
+        'Word' = 'winword.exe'
+        'Excel' = 'excel.exe'
+        'PowerPoint' = 'powerpnt.exe'
+        'Outlook' = 'outlook.exe'
+        'OneNote' = 'onenote.exe'
+        'Access' = 'msaccess.exe'
+        'Publisher' = 'mspub.exe'
+        'Project' = 'winproj.exe'
+        'Visio' = 'visio.exe'
+    }
+    $exe = $exeMap[$App]
+    if (-not $exe) { Write-Log "Unknown Office app: $App" 'ERROR'; return }
+    try {
+        Start-Process $exe
+        Write-Log "Launched $App" 'OK'
+    } catch {
+        Write-Log "Could not launch $App : $($_.Exception.Message)" 'ERROR'
+    }
+}
+
+function Check-Odt {
+    <#
+    .SYNOPSIS
+        Reports whether the ODT setup.exe is cached and its version.
+    #>
+    $setupExe = Join-Path $script:OdtCacheDir 'setup.exe'
+    if (Test-Path $setupExe) {
+        $vi = (Get-Item $setupExe).VersionInfo
+        Write-Log "ODT found: $setupExe (version $($vi.FileVersion))" 'OK'
+    } else {
+        Write-Log "ODT not cached at $setupExe. It will be downloaded on first use." 'WARN'
+    }
+}
+
+function Open-LogFolder {
+    <#
+    .SYNOPSIS
+        Opens the persistent log folder in Explorer.
+    #>
+    if (-not (Test-Path $script:LogDir)) { New-Item -ItemType Directory -Force -Path $script:LogDir | Out-Null }
+    Start-Process explorer.exe $script:LogDir
+    Write-Log "Opened log folder: $script:LogDir" 'INFO'
+}
+
+function Open-DownloadFolder {
+    <#
+    .SYNOPSIS
+        Opens the last successful download folder in Explorer.
+    #>
+    if ($script:LastDownloadFolder -and (Test-Path $script:LastDownloadFolder)) {
+        Start-Process explorer.exe $script:LastDownloadFolder
+        Write-Log "Opened download folder: $script:LastDownloadFolder" 'INFO'
+    } else {
+        Write-Log 'No download folder yet. Run a download first.' 'WARN'
+    }
+}
+
+function Cancel-BackgroundJob {
+    <#
+    .SYNOPSIS
+        Cancels the running background operation: stops the ODT setup.exe process
+        and the runspace, then restores the UI.
+    #>
+    if (-not $script:Job.Running) { return }
+    Write-Log 'Cancelling the running operation...' 'WARN'
+    # Stop the ODT process (setup.exe) started by this app.
+    Get-Process -Name 'setup' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    if ($script:Job.PowerShell) {
+        try { $script:Job.PowerShell.Stop() } catch { }
+    }
+    $kind = $script:Job.Kind
+    $script:Job.Running = $false
+    $script:Job.PowerShell = $null
+    $script:Job.AsyncResult = $null
+    Set-UiBusy $false
+    Update-ButtonStates
+    if ($kind -eq 'download') { Set-DownloadUiState 'cancelled' }
+    Write-Log 'Operation cancelled.' 'WARN'
+}
+
+function Set-DownloadUiState {
+    <#
+    .SYNOPSIS
+        Updates the Download tab's progress/cancel/status controls for a state.
+    .PARAMETER State
+        'idle' | 'downloading' | 'complete' | 'failed' | 'cancelled'.
+    #>
+    param([string]$State)
+    $cancelBtn = Get-Ui 'CancelDownloadBtn'
+    $progress = Get-Ui 'DownloadProgress'
+    $status = Get-Ui 'DownloadStatusText'
+    $progressText = Get-Ui 'DownloadProgressText'
+    $speedText = Get-Ui 'DownloadSpeedText'
+    if ($State -eq 'downloading') {
+        if ($cancelBtn) { $cancelBtn.Visibility = 'Visible' }
+        if ($progress) { $progress.Visibility = 'Visible' }
+        if ($status) { $status.Text = 'Status: Downloading Office source files...' }
+    } else {
+        if ($cancelBtn) { $cancelBtn.Visibility = 'Collapsed' }
+        if ($progress) { $progress.Visibility = 'Collapsed' }
+        if ($progressText) { $progressText.Text = '' }
+        if ($speedText) { $speedText.Text = '' }
+        if ($status) {
+            $status.Text = switch ($State) {
+                'complete'   { 'Status: Download completed.' }
+                'failed'     { 'Status: Download failed.' }
+                'cancelled'  { 'Status: Download cancelled.' }
+                default      { 'Status: Ready' }
+            }
+        }
+    }
+}
+
+function Update-DownloadProgress {
+    <#
+    .SYNOPSIS
+        Samples the download destination folder size and updates the progress UI
+        (downloaded size + speed). ODT does not report a total size, so the bar
+        stays indeterminate.
+    #>
+    $dest = $script:LastDownloadDest
+    if (-not $dest -or -not (Test-Path $dest)) { return }
+    $size = (Get-ChildItem -Path $dest -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+    if ($null -eq $size) { $size = 0 }
+    $now = Get-Date
+    $speed = 0
+    if ($script:DownloadLastTime -and $script:DownloadLastSize -ge 0) {
+        $dt = ($now - $script:DownloadLastTime).TotalSeconds
+        if ($dt -gt 0) { $speed = ($size - $script:DownloadLastSize) / $dt }
+    }
+    $script:DownloadLastSize = $size
+    $script:DownloadLastTime = $now
+
+    $sizeText = '{0:N2} MB' -f ($size / 1MB)
+    $speedText = if ($speed -gt 0) { '{0:N2} MiB/s' -f ($speed / 1MB) } else { '—' }
+    $pt = Get-Ui 'DownloadProgressText'
+    if ($pt) { $pt.Text = "Downloaded: $sizeText" }
+    $st = Get-Ui 'DownloadSpeedText'
+    if ($st) { $st.Text = "Download speed: $speedText" }
+}
+
 # ============================================================================
 # Action handlers
 # ============================================================================
@@ -1549,6 +2239,7 @@ function Start-Install {
     $arch = Get-SelectedArchitecture
     $channel = Get-SelectedChannel
     $editionId = Get-SelectedEditionId
+    $version = Get-SelectedVersion
 
     # Validate the offline source BEFORE building the config. If the user asked
     # for an offline install but the folder is missing/invalid, abort rather than
@@ -1559,10 +2250,10 @@ function Start-Install {
     if ($useIndividual) {
         if (-not (Test-VolumeChannelMismatch)) { return }
         $apps = Get-SelectedIndividualApps
-        $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -IndividualApps $apps -UseIndividualApps -SourcePath $offlinePath
+        $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -IndividualApps $apps -UseIndividualApps -SourcePath $offlinePath -Version $version
     } else {
         $excluded = Get-ExcludedApps
-        $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -ExcludedApps $excluded -SourcePath $offlinePath
+        $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -ExcludedApps $excluded -SourcePath $offlinePath -Version $version
     }
 
     if (-not $config) { return }
@@ -1682,11 +2373,10 @@ function Start-Download {
         Builds an Add config with SourcePath = destination and runs setup.exe
         /download. No elevation needed.
     .NOTES
-        The spec asked for a "Single-threaded download" checkbox. ODT does not
-        expose any single-vs-multi-thread download switch (verified against the
-        ODT /? help and the configuration schema — there is no such option), so
-        per the spec the checkbox was removed rather than faking behavior. ODT
-        downloads files sequentially on its own.
+        The "Download files in one stream" checkbox is retained for UI parity
+        with the visual reference, but ODT does not expose a single-vs-multi-
+        thread download switch, so it is informational only and does not change
+        the ODT invocation.
     #>
     $destBox = Get-Ui 'DownloadDestBox'
     $dest = $destBox.Text.Trim()
@@ -1710,8 +2400,9 @@ function Start-Download {
     $arch = Get-SelectedArchitecture
     $channel = Get-SelectedChannel
     $editionId = Get-SelectedEditionId
+    $version = Get-SelectedVersion
 
-    $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -SourcePath $dest
+    $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -SourcePath $dest -Version $version
     if (-not $config) { return }
 
     $configPath = Join-Path $env:TEMP ("office-download-{0}.xml" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
@@ -1719,6 +2410,9 @@ function Start-Download {
     Write-Log "Download config written to $configPath" 'INFO'
 
     $script:LastDownloadDest = $dest
+    $script:DownloadLastSize = 0
+    $script:DownloadLastTime = $null
+    Set-DownloadUiState 'downloading'
     Set-UiBusy $true
     Start-BackgroundJob -Kind 'download' -Script $script:OdtJobScript -Arguments @($script:OdtAcquireScript, $script:OdtRunScript, $configPath, 'download', $script:OdtCacheDir, $script:OdtDownloadPage, $script:OdtUrlFile) -OdtLogDir $script:OdtLogDir
 }
@@ -1781,22 +2475,6 @@ function Start-KmsActivation {
 # Event wiring
 # ============================================================================
 
-function Add-ArchSync {
-    <#
-    .SYNOPSIS
-        Mirrors a radio button's checked state to its counterpart on the other
-        tab. Implemented as a function (not a loop) so each handler captures its
-        own Src/Dst values — PowerShell closures capture variables by reference,
-        so a foreach loop would make every handler use the last pair.
-    #>
-    param([string]$Src, [string]$Dst)
-    (Get-Ui $Src).Add_Checked({
-        if ($script:SyncingArch) { return }
-        $script:SyncingArch = $true
-        try { (Get-Ui $Dst).IsChecked = $true } finally { $script:SyncingArch = $false }
-    })
-}
-
 function Get-ScriptPath {
     <#
     .SYNOPSIS
@@ -1818,23 +2496,19 @@ function Wire-Events {
     (Get-Ui 'DarkThemeCheck').Add_Checked({ Set-AppTheme -Dark $true })
     (Get-Ui 'DarkThemeCheck').Add_Unchecked({ Set-AppTheme -Dark $false })
 
-    # --- Install tab: individual-apps mode toggle ---
+    # --- Main Window: individual-apps (Single Products) mode toggle ---
     (Get-Ui 'InstallIndividualCheck').Add_Checked({
         (Get-Ui 'IndividualAppsBorder').Visibility = 'Visible'
         (Get-Ui 'SuiteAppsBorder').Visibility = 'Collapsed'
-        (Get-Ui 'YearSelectorPanel').Visibility = 'Visible'
-        (Get-Ui 'AppsLabel').Text = 'Individual apps to install'
         Update-ButtonStates
     })
     (Get-Ui 'InstallIndividualCheck').Add_Unchecked({
         (Get-Ui 'IndividualAppsBorder').Visibility = 'Collapsed'
         (Get-Ui 'SuiteAppsBorder').Visibility = 'Visible'
-        (Get-Ui 'YearSelectorPanel').Visibility = 'Collapsed'
-        (Get-Ui 'AppsLabel').Text = 'Applications (uncheck to exclude from the suite)'
         Update-ButtonStates
     })
 
-    # --- Install tab: offline source toggle ---
+    # --- Main Window: offline source toggle ---
     (Get-Ui 'InstallOfflineCheck').Add_Checked({ (Get-Ui 'OfflineSourcePanel').Visibility = 'Visible' })
     (Get-Ui 'InstallOfflineCheck').Add_Unchecked({ (Get-Ui 'OfflineSourcePanel').Visibility = 'Collapsed' })
 
@@ -1848,12 +2522,54 @@ function Wire-Events {
         if ($folder) { (Get-Ui 'DownloadDestBox').Text = $folder }
     })
 
+    # --- Main Window: Product Family filters the Edition dropdown ---
+    (Get-Ui 'InstallFamilyCombo').Add_SelectionChanged({
+        if ($script:SyncingEdition) { return }
+        $script:SyncingEdition = $true
+        try {
+            $family = $this.SelectedItem.Tag
+            Populate-EditionCombo (Get-Ui 'InstallEditionCombo') -FamilyName $family
+            Populate-EditionCombo (Get-Ui 'DownloadEditionCombo') -FamilyName $family
+        } finally { $script:SyncingEdition = $false }
+        Update-ButtonStates
+    })
+
+    # --- Main Window: Product Version selector + Channel info ---
+    (Get-Ui 'VersionSelectBtn').Add_Click({
+        $v = Show-ProductVersionDialog
+        if ($v) {
+            # Reflect the chosen version in both version combos.
+            $installVer = Get-Ui 'InstallVersionCombo'
+            $downloadVer = Get-Ui 'DownloadVersionCombo'
+            foreach ($combo in @($installVer, $downloadVer)) {
+                foreach ($item in $combo.Items) {
+                    if ($item.Tag -eq $v) { $combo.SelectedItem = $item; break }
+                }
+            }
+            Write-Log "Product version set to $v" 'INFO'
+        }
+    })
+    (Get-Ui 'ChannelInfoBtn').Add_Click({ Show-ChannelInfoDialog })
+
     # --- Action buttons ---
     (Get-Ui 'InstallBtn').Add_Click({ Start-Install })
     (Get-Ui 'UninstallBtn').Add_Click({ Start-Uninstall })
     (Get-Ui 'StatusBtn').Add_Click({ Show-InstalledStatus })
     (Get-Ui 'DownloadBtn').Add_Click({ Start-Download })
+    (Get-Ui 'CancelDownloadBtn').Add_Click({ Cancel-BackgroundJob })
     (Get-Ui 'CreateIsoBtn').Add_Click({ Start-CreateIso })
+
+    # --- Utilities: launch Office apps ---
+    foreach ($app in @('Word', 'Excel', 'PowerPoint', 'Outlook', 'OneNote', 'Access', 'Publisher', 'Project', 'Visio')) {
+        $btn = Get-Ui ("Launch{0}Btn" -f $app)
+        if ($btn) { $btn.Add_Click({ Launch-OfficeApp -App $app }) }
+    }
+
+    # --- Utilities: diagnostics ---
+    (Get-Ui 'CheckInstallBtn').Add_Click({ Show-InstalledStatus })
+    (Get-Ui 'CheckOdtBtn').Add_Click({ Check-Odt })
+    (Get-Ui 'OpenLogFolderBtn').Add_Click({ Open-LogFolder })
+    (Get-Ui 'OpenDownloadFolderBtn').Add_Click({ Open-DownloadFolder })
 
     # --- About tab ---
     (Get-Ui 'OdtDocsLink').Add_Click({ Start-Process $script:OdtDocsUrl })
@@ -1861,7 +2577,7 @@ function Wire-Events {
     (Get-Ui 'KmsToggleCheck').Add_Unchecked({ (Get-Ui 'KmsSection').Visibility = 'Collapsed' })
     (Get-Ui 'KmsActivateBtn').Add_Click({ Start-KmsActivation })
 
-    # --- Cross-tab state sync (Install <-> Download must never disagree) ---
+    # --- Cross-tab state sync (Main Window <-> Download must never disagree) ---
     $installEdition = Get-Ui 'InstallEditionCombo'
     $downloadEdition = Get-Ui 'DownloadEditionCombo'
     $installEdition.Add_SelectionChanged({
@@ -1890,13 +2606,39 @@ function Wire-Events {
         try { (Get-Ui 'InstallChannelCombo').SelectedIndex = $this.SelectedIndex } finally { $script:SyncingChannel = $false }
     })
 
-    # Architecture radios: mirror between tabs. Uses a helper function (not a
-    # foreach loop) because PowerShell closures capture loop variables by
-    # reference — a foreach would make every handler use the last pair.
-    Add-ArchSync -Src 'InstallArch64Radio' -Dst 'DownloadArch64Radio'
-    Add-ArchSync -Src 'InstallArch32Radio' -Dst 'DownloadArch32Radio'
-    Add-ArchSync -Src 'DownloadArch64Radio' -Dst 'InstallArch64Radio'
-    Add-ArchSync -Src 'DownloadArch32Radio' -Dst 'InstallArch32Radio'
+    # Architecture: Install radios <-> Download combo.
+    (Get-Ui 'InstallArch64Radio').Add_Checked({
+        if ($script:SyncingArch) { return }
+        $script:SyncingArch = $true
+        try { (Get-Ui 'DownloadArchCombo').SelectedIndex = 0 } finally { $script:SyncingArch = $false }
+    })
+    (Get-Ui 'InstallArch32Radio').Add_Checked({
+        if ($script:SyncingArch) { return }
+        $script:SyncingArch = $true
+        try { (Get-Ui 'DownloadArchCombo').SelectedIndex = 1 } finally { $script:SyncingArch = $false }
+    })
+    (Get-Ui 'DownloadArchCombo').Add_SelectionChanged({
+        if ($script:SyncingArch) { return }
+        $script:SyncingArch = $true
+        try {
+            if ($this.SelectedIndex -eq 1) { (Get-Ui 'InstallArch32Radio').IsChecked = $true }
+            else { (Get-Ui 'InstallArch64Radio').IsChecked = $true }
+        } finally { $script:SyncingArch = $false }
+    })
+
+    # Product Version: Install combo <-> Download combo.
+    $installVer = Get-Ui 'InstallVersionCombo'
+    $downloadVer = Get-Ui 'DownloadVersionCombo'
+    $installVer.Add_SelectionChanged({
+        if ($script:SyncingVersion) { return }
+        $script:SyncingVersion = $true
+        try { (Get-Ui 'DownloadVersionCombo').SelectedIndex = $this.SelectedIndex } finally { $script:SyncingVersion = $false }
+    })
+    $downloadVer.Add_SelectionChanged({
+        if ($script:SyncingVersion) { return }
+        $script:SyncingVersion = $true
+        try { (Get-Ui 'InstallVersionCombo').SelectedIndex = $this.SelectedIndex } finally { $script:SyncingVersion = $false }
+    })
 
     # --- Window close: stop the timer and clean up the runspace ---
     $script:Window.Add_Closed({
@@ -1956,13 +2698,26 @@ foreach ($d in $script:Window.Resources.MergedDictionaries) {
 }
 
 # Populate controls.
-Populate-EditionCombo (Get-Ui 'InstallEditionCombo')
-Populate-EditionCombo (Get-Ui 'DownloadEditionCombo')
+Populate-FamilyCombo (Get-Ui 'InstallFamilyCombo')
+Populate-EditionCombo (Get-Ui 'InstallEditionCombo') -FamilyName 'Microsoft 365'
+Populate-EditionCombo (Get-Ui 'DownloadEditionCombo') -FamilyName 'Microsoft 365'
 Populate-ChannelCombo (Get-Ui 'InstallChannelCombo')
 Populate-ChannelCombo (Get-Ui 'DownloadChannelCombo')
-Populate-YearCombo (Get-Ui 'InstallYearCombo')
+Populate-VersionCombo (Get-Ui 'InstallVersionCombo')
+Populate-VersionCombo (Get-Ui 'DownloadVersionCombo')
 Populate-AppLists
 Populate-LanguageLists
+
+# Populate the Download tab's architecture combo (x64/x86).
+$archCombo = Get-Ui 'DownloadArchCombo'
+$archCombo.Items.Clear()
+foreach ($a in @('x64', 'x86')) {
+    $item = New-Object System.Windows.Controls.ComboBoxItem
+    $item.Content = $a
+    $item.Tag = $a
+    [void]$archCombo.Items.Add($item)
+}
+$archCombo.SelectedIndex = 0
 
 # About tab paths.
 (Get-Ui 'AboutVersionText').Text = "Version $script:AppVersion"

@@ -51,41 +51,50 @@ when you click Install/Uninstall.
 1. Download or clone this repository.
 2. Double-click **`OfficeInstallerGUI.ps1`** (or right-click → **Run with
    PowerShell**).
-3. Use the **Install** tab to pick an edition, architecture, channel, languages
-   and apps, then click **Install Office**.
-4. Use the **Download / Offline Package** tab to fetch an offline source and
-   optionally build an ISO from it.
+3. Use the **Main Window** tab to pick a product family, edition, architecture,
+   channel, version, languages and apps, then click **Install Office**.
+4. Use the **Download Office** tab to fetch an offline source and optionally
+   build an ISO from it.
 
 > `MainWindow.xaml` must stay in the same folder as `OfficeInstallerGUI.ps1`.
 > If it's missing, the script falls back to an identical inline copy.
 
-## The three tabs
+## The four tabs
 
-### Install
-- **Edition** — Microsoft 365 Apps for enterprise/business, Office LTSC
-  2021/2024 (Volume), Office 2019 (Volume).
+### Main Window
+- **Product Family** — Microsoft 365, Office LTSC 2024/2021, Office 2019.
+- **Product / Edition** — the matching ODT product IDs (e.g. `ProPlus2024Volume`).
 - **Architecture** — 64-bit (x64) or 32-bit (x86).
-- **Individual apps** — toggle to install standalone products (Word, Excel,
-  Project, Visio, OneDrive, …) instead of a full suite. A year selector picks
-  the 2019/2021 Project/Visio volume IDs.
+- **Single Products** — toggle to install standalone products (Word, Excel,
+  Project, Visio, OneDrive, …) instead of a full suite.
 - **Applications** — suite mode: uncheck apps to emit `<ExcludeApp>` entries.
   Teams, Lync and Groove are unchecked by default (they're separate/legacy
   installs).
-- **Channel** — the seven official ODT channel values.
+- **Channel** — the seven official ODT channel values (with an info dialog).
+- **Product Version** — pick a specific build (e.g. `16.0.20228.20186`) or a
+  custom `16.0.<build>.<revision>`; written to the config as `<Version>`.
 - **Languages** — multi-select list; `en-US` is checked by default.
-- **Use offline source** — install from a folder you downloaded on the
+- **Use Offline Installation** — install from a folder you downloaded on the
   Download tab (adds `SourcePath` to the config).
-- **Install Office / Uninstall Office / Check Installed Status**.
+- **Install Office / Uninstall Office / Check Status**.
 
-### Download / Offline Package
-- Same edition / architecture / channel / language selections as the Install
-  tab (kept in sync automatically).
+### Utilities and Settings
+- **Office Utilities** — launch installed Office apps (Word, Excel, PowerPoint,
+  Outlook, OneNote, Access, Publisher, Project, Visio).
+- **Office Diagnostics** — Check Installation, Check ODT, Open Log Folder,
+  Open Download Folder.
+- **Log / Output** — live, auto-scrolling log of ODT's output.
+
+### Download Office
+- Same product / architecture / channel / version / language selections as the
+  Main Window tab (kept in sync automatically).
 - **Destination folder** for the downloaded source files.
-- **Download Office (offline source)** — runs `setup.exe /download`.
-- **Create ISO from downloaded source** — enabled after a successful download.
-- **Console** — live, auto-scrolling log of ODT's output.
+- **Download Office** — runs `setup.exe /download`, with live progress (size +
+  speed) and a **Cancel Download** button.
+- **Create ISO** — enabled after a successful download.
+- **Download files in one stream** — informational only (ODT has no such switch).
 
-### About / Settings
+### About
 - App description and a link to the official ODT documentation.
 - Local paths where `setup.exe` and logs are cached.
 - Optional (hidden by default) **KMS host activation** section for
