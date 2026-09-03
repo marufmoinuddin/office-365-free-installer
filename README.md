@@ -115,6 +115,13 @@ that fails it falls back to `tools/odt-url.txt` in this repository. A GitHub
 Actions workflow (`.github/workflows/update-odt.yml`) re-resolves that URL from
 Microsoft's page weekly and commits any change, so the fallback is never stale.
 
+> **Note (documented deviation):** the fallback reads `tools/odt-url.txt` from
+> this project's own GitHub repository (`raw.githubusercontent.com`). This is the
+> only non-Microsoft network destination in the GUI. It is used only when live
+> Microsoft page resolution fails, it contacts only this project's repo (no
+> third party, no telemetry), and it was added at the maintainer's request to
+> make the ODT download more resilient.
+
 ## Troubleshooting
 
 See [docs/FAQ.md](docs/FAQ.md) for common issues.

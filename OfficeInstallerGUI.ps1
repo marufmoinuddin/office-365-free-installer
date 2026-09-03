@@ -63,6 +63,10 @@ $script:AdkDocsUrl      = 'https://learn.microsoft.com/en-us/windows-hardware/ge
 # Fallback ODT download URL, maintained by the repo's .github/workflows/update-odt.yml
 # workflow (it re-resolves the URL from Microsoft's page weekly and commits it here).
 # Used only if live page resolution fails — see Get-OdtSetupExe.
+# NOTE (documented deviation): this is the only non-Microsoft network destination
+# in the GUI. It contacts only this project's own GitHub repo, is used only as a
+# fallback when Microsoft's page cannot be reached, and carries no telemetry.
+# Added at the maintainer's request to make the ODT download more resilient.
 $script:OdtUrlFile = 'https://raw.githubusercontent.com/marufmoinuddin/office-365-free-installer/main/tools/odt-url.txt'
 
 # Where ODT writes its own logs (matches the <Logging Path="%temp%\OfficeLogs" />
@@ -819,7 +823,7 @@ function Invoke-OdtAction {
     .SYNOPSIS
         Launches setup.exe with the given config and mode.
     .DESCRIPTION
-        This is the synchronous core used by the background runspace. It starts
+        Wraps $script:OdtRunScript (the shared setup.exe invocation). It starts
         setup.exe with /configure or /download, waits for it to finish, and
         returns the exit code. stdout/stderr are not useful from ODT (it writes
         its own logs), so the caller tails the ODT log directory separately.
@@ -833,8 +837,7 @@ function Invoke-OdtAction {
         Process exit code.
     #>
     param([string]$SetupExe, [string]$ConfigPath, [ValidateSet('configure','download')][string]$Mode)
-    $p = Start-Process -FilePath $SetupExe -ArgumentList @("/$Mode", "`"$ConfigPath`"") -Wait -PassThru -NoNewWindow
-    return $p.ExitCode
+    return & $script:OdtRunScript $SetupExe $ConfigPath $Mode
 }
 
 # ISO creation logic, defined once as a scriptblock so both the main-thread
@@ -1005,11 +1008,19 @@ function Update-OdtVersionLabel {
 # Background job machinery
 # ============================================================================
 
+# setup.exe invocation, shared by the main-thread Invoke-OdtAction function and
+# the background runspace (which cannot call main-thread functions directly).
+$script:OdtRunScript = {
+    param($SetupExe, $ConfigPath, $Mode)
+    $p = Start-Process -FilePath $SetupExe -ArgumentList @("/$Mode", "`"$ConfigPath`"") -Wait -PassThru -NoNewWindow
+    return $p.ExitCode
+}
+
 # Scriptblock run in the background runspace for ODT configure/download actions.
 # It first ensures setup.exe is available (downloading + extracting it if needed)
 # and then runs setup.exe — the whole operation stays off the UI thread.
 $script:OdtJobScript = {
-    param($OdtAcquire, $ConfigPath, $Mode, $OdtCacheDir, $OdtDownloadPage, $OdtUrlFile, $Queue)
+    param($OdtAcquire, $OdtRun, $ConfigPath, $Mode, $OdtCacheDir, $OdtDownloadPage, $OdtUrlFile, $Queue)
     function Write-JobLine { param([string]$Line) $Queue.Enqueue($Line) }
 
     # 1. Ensure setup.exe is present (downloads + extracts if needed).
@@ -1021,9 +1032,9 @@ $script:OdtJobScript = {
 
     # 2. Run setup.exe.
     Write-JobLine "Launching setup.exe /$Mode ..."
-    $p = Start-Process -FilePath $setupExe -ArgumentList @("/$Mode", "`"$ConfigPath`"") -Wait -PassThru -NoNewWindow
-    Write-JobLine "setup.exe finished with exit code $($p.ExitCode)."
-    return $p.ExitCode
+    $exitCode = & $OdtRun $setupExe $ConfigPath $Mode
+    Write-JobLine "setup.exe finished with exit code $exitCode."
+    return $exitCode
 }
 
 # Scriptblock run in the background runspace for ISO creation.
@@ -1035,6 +1046,20 @@ $script:IsoJobScript = {
     Write-JobLine $result.Message
     if ($result.Success) { return 0 }
     return 1
+}
+
+# Scriptblock run in the background runspace for KMS host activation (ospp.vbs).
+$script:KmsJobScript = {
+    param($Ospp, $KmsHost, $Queue)
+    function Write-JobLine { param([string]$Line) $Queue.Enqueue($Line) }
+    Write-JobLine "Setting KMS host to $KmsHost ..."
+    $out1 = & cscript.exe //nologo $Ospp "/sethst:$KmsHost" 2>&1
+    foreach ($l in $out1) { Write-JobLine "$l" }
+    Write-JobLine 'Activating against the KMS host ...'
+    $out2 = & cscript.exe //nologo $Ospp /act 2>&1
+    foreach ($l in $out2) { Write-JobLine "$l" }
+    Write-JobLine 'KMS activation attempt finished.'
+    return 0
 }
 
 function Start-BackgroundJob {
@@ -1206,6 +1231,13 @@ function Update-FromBackgroundJob {
                     Write-Log 'ISO creation failed. See the console log for details.' 'ERROR'
                 }
             }
+            'kms' {
+                if ($exitCode -eq 0) {
+                    Write-Log 'KMS activation finished.' 'OK'
+                } else {
+                    Write-Log 'KMS activation failed. See the console log for details.' 'ERROR'
+                }
+            }
         }
     }
 }
@@ -1217,7 +1249,7 @@ function Set-UiBusy {
         while a long-running operation is in flight.
     #>
     param([bool]$Busy)
-    foreach ($name in @('InstallBtn', 'UninstallBtn', 'StatusBtn', 'DownloadBtn', 'CreateIsoBtn')) {
+    foreach ($name in @('InstallBtn', 'UninstallBtn', 'StatusBtn', 'DownloadBtn', 'CreateIsoBtn', 'KmsActivateBtn')) {
         $b = Get-Ui $name
         if ($b) { $b.IsEnabled = -not $Busy }
     }
@@ -1571,7 +1603,7 @@ function Start-InstallFromConfig {
         return
     }
     Set-UiBusy $true
-    Start-BackgroundJob -Kind 'install' -Script $script:OdtJobScript -Arguments @($script:OdtAcquireScript, $ConfigPath, 'configure', $script:OdtCacheDir, $script:OdtDownloadPage, $script:OdtUrlFile) -OdtLogDir $script:OdtLogDir
+    Start-BackgroundJob -Kind 'install' -Script $script:OdtJobScript -Arguments @($script:OdtAcquireScript, $script:OdtRunScript, $ConfigPath, 'configure', $script:OdtCacheDir, $script:OdtDownloadPage, $script:OdtUrlFile) -OdtLogDir $script:OdtLogDir
 }
 
 function Start-Uninstall {
@@ -1618,7 +1650,7 @@ function Start-UninstallFromConfig {
         return
     }
     Set-UiBusy $true
-    Start-BackgroundJob -Kind 'uninstall' -Script $script:OdtJobScript -Arguments @($script:OdtAcquireScript, $ConfigPath, 'configure', $script:OdtCacheDir, $script:OdtDownloadPage, $script:OdtUrlFile) -OdtLogDir $script:OdtLogDir
+    Start-BackgroundJob -Kind 'uninstall' -Script $script:OdtJobScript -Arguments @($script:OdtAcquireScript, $script:OdtRunScript, $ConfigPath, 'configure', $script:OdtCacheDir, $script:OdtDownloadPage, $script:OdtUrlFile) -OdtLogDir $script:OdtLogDir
 }
 
 function Get-OfflineSourcePath {
@@ -1662,9 +1694,12 @@ function Start-Download {
         Write-Log 'Please choose a destination folder for the download.' 'ERROR'
         return
     }
-    # Validate the path before it goes anywhere near a command line.
-    if ($dest -match '[&|;`]') {
-        Write-Log 'Destination folder contains invalid characters (& | ; `).' 'ERROR'
+    # Validate the path before it goes anywhere near a command line. Reject the
+    # command-injection-relevant characters; array-arg quoting handles spaces and
+    # most other characters safely.
+    $invalidChars = [char[]]@('&', '|', ';', '`', '"', "'")
+    if ($dest.IndexOfAny($invalidChars) -ge 0) {
+        Write-Log 'Destination folder contains invalid characters (& | ; backtick or quotes).' 'ERROR'
         return
     }
     if (-not (Test-Path $dest)) {
@@ -1685,7 +1720,7 @@ function Start-Download {
 
     $script:LastDownloadDest = $dest
     Set-UiBusy $true
-    Start-BackgroundJob -Kind 'download' -Script $script:OdtJobScript -Arguments @($script:OdtAcquireScript, $configPath, 'download', $script:OdtCacheDir, $script:OdtDownloadPage, $script:OdtUrlFile) -OdtLogDir $script:OdtLogDir
+    Start-BackgroundJob -Kind 'download' -Script $script:OdtJobScript -Arguments @($script:OdtAcquireScript, $script:OdtRunScript, $configPath, 'download', $script:OdtCacheDir, $script:OdtDownloadPage, $script:OdtUrlFile) -OdtLogDir $script:OdtLogDir
 }
 
 function Start-CreateIso {
@@ -1725,6 +1760,7 @@ function Start-KmsActivation {
         Points an already volume-licensed Office install at an organization KMS
         host using Microsoft's own ospp.vbs. No key injection, no channel
         conversion — this only works with a genuinely volume-licensed product.
+        Runs in a background runspace so the UI stays responsive.
     #>
     $hostBox = Get-Ui 'KmsHostBox'
     $kmsHost = $hostBox.Text.Trim()
@@ -1737,11 +1773,8 @@ function Start-KmsActivation {
         Write-Log "ospp.vbs not found at $ospp. A volume-licensed Office install is required." 'ERROR'
         return
     }
-    Write-Log "Setting KMS host to $kmsHost ..." 'INFO'
-    & cscript.exe //nologo $ospp "/sethst:$kmsHost"
-    Write-Log 'Activating against the KMS host ...' 'INFO'
-    & cscript.exe //nologo $ospp /act
-    Write-Log 'KMS activation attempt finished. Check the output above.' 'INFO'
+    Set-UiBusy $true
+    Start-BackgroundJob -Kind 'kms' -Script $script:KmsJobScript -Arguments @($ospp, $kmsHost) -OdtLogDir $null
 }
 
 # ============================================================================
