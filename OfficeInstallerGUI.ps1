@@ -60,6 +60,11 @@ $script:OdtDownloadPage = 'https://www.microsoft.com/en-us/download/details.aspx
 $script:OdtDocsUrl      = 'https://learn.microsoft.com/en-us/deployoffice/overview-office-deployment-tool'
 $script:AdkDocsUrl      = 'https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install'
 
+# Fallback ODT download URL, maintained by the repo's .github/workflows/update-odt.yml
+# workflow (it re-resolves the URL from Microsoft's page weekly and commits it here).
+# Used only if live page resolution fails — see Get-OdtSetupExe.
+$script:OdtUrlFile = 'https://raw.githubusercontent.com/marufmoinuddin/office-365-free-installer/main/tools/odt-url.txt'
+
 # Where ODT writes its own logs (matches the <Logging Path="%temp%\OfficeLogs" />
 # element we emit in generated configs). We tail this directory live.
 $script:OdtLogDir = Join-Path $env:TEMP 'OfficeLogs'
@@ -560,15 +565,36 @@ function Confirm-Elevation {
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Get-RepoOdtUrl {
+    <#
+    .SYNOPSIS
+        Returns the ODT download URL maintained in the repo by the
+        update-odt.yml workflow (tools/odt-url.txt), or $null if unavailable.
+    .DESCRIPTION
+        This is a fallback for when live resolution from Microsoft's download
+        page fails (e.g. the page structure changed or the page is unreachable).
+        The URL is still a download.microsoft.com link — the workflow only keeps
+        the current one fresh so we never depend on a stale hardcoded URL.
+    #>
+    try {
+        $content = (Invoke-WebRequest -Uri $script:OdtUrlFile -UseBasicParsing -TimeoutSec 15).Content
+        $url = ($content -split "\r?\n")[0].Trim()
+        if ($url -match '^https://download\.microsoft\.com/.*\.exe$') { return $url }
+    } catch { }
+    return $null
+}
+
 function Get-OdtSetupExe {
     <#
     .SYNOPSIS
         Returns the full path to the ODT setup.exe, downloading it if needed.
     .DESCRIPTION
         Checks the local cache folder for setup.exe. If absent (or -Force), it
-        resolves the current ODT download URL from Microsoft's official download
-        page (id=49117), downloads the self-extracting installer, and extracts
-        setup.exe using the installer's own /extract:<path> switch.
+        builds a list of candidate installer URLs — resolved live from
+        Microsoft's official download page (id=49117), then the repo-maintained
+        fallback (tools/odt-url.txt) — and tries each (with a retry) until one
+        downloads successfully. The self-extracting installer is then unpacked
+        with its own /extract:<path> switch to obtain setup.exe.
     .PARAMETER Force
         Re-download even if a cached copy exists.
     .RETURNS
@@ -585,21 +611,66 @@ function Get-OdtSetupExe {
     }
 
     Write-Log 'Downloading the Office Deployment Tool from Microsoft...' 'INFO'
+
+    # --- Build the candidate installer URL list, tried in order ---
+    $candidates = @()
+
+    # 1. Resolve the actual .exe URL from the official download page. The page
+    #    embeds a direct href to download.microsoft.com — we parse it out rather
+    #    than hardcoding a versioned URL that goes stale.
     try {
-        # Resolve the actual .exe URL from the official download page. The page
-        # embeds a direct href to download.microsoft.com — we parse it out rather
-        # than hardcoding a versioned URL that goes stale.
         $page = Invoke-WebRequest -Uri $script:OdtDownloadPage -UseBasicParsing -TimeoutSec 30
         $match = [regex]::Match($page.Content, 'href="(https://download\.microsoft\.com/[^"]+\.exe)"')
-        if (-not $match.Success) {
-            throw 'Could not locate the ODT download link on the Microsoft download page.'
+        if ($match.Success) {
+            $candidates += $match.Groups[1].Value
+        } else {
+            Write-Log 'Could not locate the ODT download link on the Microsoft download page.' 'WARN'
         }
-        $installerUrl = $match.Groups[1].Value
-        Write-Log "ODT installer URL: $installerUrl" 'INFO'
+    } catch {
+        Write-Log "Could not reach the ODT download page: $($_.Exception.Message)" 'WARN'
+    }
 
-        $installerPath = Join-Path $env:TEMP 'odt-installer.exe'
-        Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing -TimeoutSec 120
+    # 2. Repo-maintained fallback URL (kept fresh by the update-odt.yml workflow).
+    $repoUrl = Get-RepoOdtUrl
+    if ($repoUrl) {
+        $candidates += $repoUrl
+    }
 
+    $candidates = @($candidates | Select-Object -Unique)
+    if ($candidates.Count -eq 0) {
+        Write-Log 'Could not determine the ODT download URL from Microsoft or the repo fallback.' 'ERROR'
+        return $null
+    }
+
+    # --- Try each candidate (with one retry for transient network/DNS failures) ---
+    foreach ($installerUrl in $candidates) {
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
+            Write-Log "Trying ODT installer URL (attempt $attempt/2): $installerUrl" 'INFO'
+            $installerPath = Join-Path $env:TEMP 'odt-installer.exe'
+            try {
+                Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing -TimeoutSec 120
+                if ((Get-Item $installerPath).Length -lt 1MB) {
+                    throw "Downloaded installer is unexpectedly small ($((Get-Item $installerPath).Length) bytes)."
+                }
+                break   # download succeeded
+            } catch {
+                Write-Log "Download failed: $($_.Exception.Message)" 'WARN'
+                Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+                if ($attempt -eq 2) { $installerPath = $null }
+            }
+        }
+        if ($installerPath -and (Test-Path $installerPath)) {
+            break   # got a valid installer from this candidate
+        }
+    }
+
+    if (-not $installerPath -or -not (Test-Path $installerPath)) {
+        Write-Log 'All ODT download sources failed. Check your internet connection and DNS, or download the ODT manually and place setup.exe in the cache folder.' 'ERROR'
+        return $null
+    }
+
+    # --- Extract setup.exe from the self-extracting installer ---
+    try {
         # The ODT downloader is a self-extracting archive. /extract:<path> pulls
         # out setup.exe (plus configuration.xml etc.) without installing anything.
         $extractDir = Join-Path $script:OdtCacheDir 'extract'

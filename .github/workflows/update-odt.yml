@@ -1,9 +1,14 @@
 name: Update ODT URL
 
+# Keeps tools/odt-url.txt pointing at the current Office Deployment Tool
+# download. The GUI (OfficeInstallerGUI.ps1) resolves the URL live from
+# Microsoft's page at runtime and falls back to this file if that fails, so this
+# workflow guarantees the fallback is never stale.
+
 on:
   schedule:
-    - cron: '0 6 * * 1'   # Every Monday 06:00 UTC
-  workflow_dispatch:      # Allow manual trigger from the Actions tab
+    - cron: '0 3 * * *'   # 03:00 UTC every Day
+  workflow_dispatch:      # allow manual runs from the Actions tab
 
 permissions:
   contents: write
@@ -12,36 +17,39 @@ jobs:
   update-odt-url:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install Camoufox
+      - name: Resolve current ODT download URL
+        id: resolve
         run: |
-          pip install camoufox
-          python -m camoufox fetch
+          # Fetch Microsoft's official ODT download page and extract the direct
+          # download.microsoft.com URL. This mirrors the approach the GUI uses at
+          # runtime; the workflow keeps a fresh copy in tools/odt-url.txt as a
+          # fallback in case the page structure changes or is unreachable.
+          PAGE="$(curl -sL --max-time 60 'https://www.microsoft.com/en-us/download/details.aspx?id=49117')"
+          URL="$(printf '%s' "$PAGE" | grep -oE 'https://download\.microsoft\.com/[^"]+\.exe' | head -n1)"
+          if [ -z "$URL" ]; then
+            echo "::error::Could not resolve the ODT download URL from the Microsoft page"
+            exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Resolved ODT URL: $URL"
 
-      - name: Scrape latest ODT URL (Camoufox)
-        id: scrape
-        continue-on-error: true
-        run: python .github/scripts/scrape-odt.py
-
-      - name: Fallback - GitHub code search
-        if: steps.scrape.outcome == 'failure'
-        run: python .github/scripts/find-odt-url.py
-
-      - name: Commit updated URL
+      - name: Write tools/odt-url.txt
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p tools
+          printf '%s\n' "${{ steps.resolve.outputs.url }}" > tools/odt-url.txt
+          cat tools/odt-url.txt
+
+      - name: Commit if changed
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add tools/odt-url.txt
           if git diff --cached --quiet; then
-            echo "No change to ODT URL"
+            echo 'ODT URL unchanged — nothing to commit.'
           else
-            git commit -m "chore: update ODT URL ($(date -u +%Y-%m-%d))"
+            git commit -m 'chore: update ODT download URL'
             git push
           fi

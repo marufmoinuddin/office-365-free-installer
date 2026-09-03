@@ -107,6 +107,14 @@ when you click Install/Uninstall.
    runspace, tailing ODT's own log under `%temp%\OfficeLogs` into the console.
 5. After a successful download you can build an ISO from the source folder.
 
+### Keeping the ODT download URL current
+
+Microsoft's direct ODT download link changes with every release. The GUI
+resolves the current URL live from Microsoft's download page at runtime, and if
+that fails it falls back to `tools/odt-url.txt` in this repository. A GitHub
+Actions workflow (`.github/workflows/update-odt.yml`) re-resolves that URL from
+Microsoft's page weekly and commits any change, so the fallback is never stale.
+
 ## Troubleshooting
 
 See [docs/FAQ.md](docs/FAQ.md) for common issues.
