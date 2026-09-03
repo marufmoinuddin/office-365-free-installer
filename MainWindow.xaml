@@ -281,17 +281,6 @@
                                 <Button x:Name="ChannelInfoBtn" Content="?" Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource SecondaryButton}" Padding="10,4" ToolTip="Show channel information"/>
                             </Grid>
 
-                            <!-- Product Version -->
-                            <TextBlock Text="Product Version" Style="{StaticResource FieldLabel}"/>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <ComboBox x:Name="InstallVersionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
-                                <Button x:Name="VersionSelectBtn" Content="Select..." Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource SecondaryButton}" Padding="10,4"/>
-                            </Grid>
-
                             <!-- Languages -->
                             <TextBlock Text="Languages" Style="{StaticResource FieldLabel}"/>
                             <Border BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="120">
@@ -386,13 +375,16 @@
                                 </StackPanel>
                             </Grid>
 
-                            <!-- Product Version -->
+                            <!-- Product Version (offline packages are version-specific) -->
                             <TextBlock Text="Product Version" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="DownloadVersionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
-
-                            <!-- Channel -->
-                            <TextBlock Text="Channel" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="DownloadChannelCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="DownloadVersionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                <Button x:Name="VersionSelectBtn" Content="Select..." Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource SecondaryButton}" Padding="10,4"/>
+                            </Grid>
 
                             <!-- Destination folder -->
                             <TextBlock Text="Destination folder" Style="{StaticResource FieldLabel}"/>

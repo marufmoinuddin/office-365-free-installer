@@ -103,10 +103,10 @@ $script:ProductFamilies = @(
 # in the Select Product Version dialog. The chosen version is written to the
 # config as <Version>16.0.x.y</Version>.
 $script:ProductVersions = @(
+    @{ Name = 'Latest (default)';                 Id = '' },
     @{ Name = '16.0.20228.20186 — Windows 10/11'; Id = '16.0.20228.20186' },
     @{ Name = '16.0.15601.20538 — Windows 8/8.1'; Id = '16.0.15601.20538' },
-    @{ Name = '16.0.12527.22286 — Windows 7';     Id = '16.0.12527.22286' },
-    @{ Name = 'Custom Version';                    Id = 'CUSTOM' }
+    @{ Name = '16.0.12527.22286 — Windows 7';     Id = '16.0.12527.22286' }
 )
 
 # Section 1.5 — Channel dropdown. These are the seven official, documented ODT
@@ -496,17 +496,6 @@ $script:InlineXaml = @'
                                 <Button x:Name="ChannelInfoBtn" Content="?" Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource SecondaryButton}" Padding="10,4" ToolTip="Show channel information"/>
                             </Grid>
 
-                            <!-- Product Version -->
-                            <TextBlock Text="Product Version" Style="{StaticResource FieldLabel}"/>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <ComboBox x:Name="InstallVersionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
-                                <Button x:Name="VersionSelectBtn" Content="Select..." Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource SecondaryButton}" Padding="10,4"/>
-                            </Grid>
-
                             <!-- Languages -->
                             <TextBlock Text="Languages" Style="{StaticResource FieldLabel}"/>
                             <Border BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Background="{DynamicResource ControlBackground}" Padding="6" MaxHeight="120">
@@ -601,13 +590,16 @@ $script:InlineXaml = @'
                                 </StackPanel>
                             </Grid>
 
-                            <!-- Product Version -->
+                            <!-- Product Version (offline packages are version-specific) -->
                             <TextBlock Text="Product Version" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="DownloadVersionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
-
-                            <!-- Channel -->
-                            <TextBlock Text="Channel" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="DownloadChannelCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="DownloadVersionCombo" Height="28" Background="{DynamicResource ControlBackground}" Foreground="{DynamicResource TextForeground}" BorderBrush="{DynamicResource ControlBorder}"/>
+                                <Button x:Name="VersionSelectBtn" Content="Select..." Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource SecondaryButton}" Padding="10,4"/>
+                            </Grid>
 
                             <!-- Destination folder -->
                             <TextBlock Text="Destination folder" Style="{StaticResource FieldLabel}"/>
@@ -1812,6 +1804,82 @@ function Get-SelectedVersion {
     return $script:SelectedVersion
 }
 
+function Set-SelectedVersion {
+    <#
+    .SYNOPSIS
+        Sets the selected product version and reflects it in the Download tab's
+        version combo.
+    #>
+    param([string]$Version)
+    $script:SelectedVersion = $Version
+    $combo = Get-Ui 'DownloadVersionCombo'
+    if ($combo) {
+        foreach ($item in $combo.Items) {
+            if ($item.Tag -eq $Version) { $combo.SelectedItem = $item; break }
+        }
+    }
+}
+
+function Get-InstalledOfficeApps {
+    <#
+    .SYNOPSIS
+        Detects which Office applications are installed by checking for their
+        executables in the Click-to-Run installation folder.
+    .RETURNS
+        Array of app names (Word, Excel, ...) that are installed.
+    #>
+    $exeMap = @{
+        'Word' = 'winword.exe'
+        'Excel' = 'excel.exe'
+        'PowerPoint' = 'powerpnt.exe'
+        'Outlook' = 'outlook.exe'
+        'OneNote' = 'onenote.exe'
+        'Access' = 'msaccess.exe'
+        'Publisher' = 'mspub.exe'
+        'Project' = 'winproj.exe'
+        'Visio' = 'visio.exe'
+    }
+    # Determine the Office installation folder from the registry.
+    $officeDir = $null
+    foreach ($path in @('HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office\ClickToRun\Configuration')) {
+        if (Test-Path $path) {
+            $props = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+            if ($props.ClientFolder) { $officeDir = $props.ClientFolder; break }
+            if ($props.InstallationPath) { $officeDir = $props.InstallationPath; break }
+        }
+    }
+    if (-not $officeDir) {
+        # Fallback to the standard Click-to-Run paths.
+        foreach ($candidate in @("$env:ProgramFiles\Microsoft Office\root\Office16", "${env:ProgramFiles(x86)}\Microsoft Office\root\Office16")) {
+            if (Test-Path $candidate) { $officeDir = $candidate; break }
+        }
+    }
+    if (-not $officeDir) { return @() }
+
+    $installed = @()
+    foreach ($app in $exeMap.Keys) {
+        if (Test-Path (Join-Path $officeDir $exeMap[$app])) { $installed += $app }
+    }
+    return $installed
+}
+
+function Update-UtilityButtons {
+    <#
+    .SYNOPSIS
+        Enables only the Office app launcher buttons for installed products.
+    #>
+    $installed = Get-InstalledOfficeApps
+    foreach ($app in @('Word', 'Excel', 'PowerPoint', 'Outlook', 'OneNote', 'Access', 'Publisher', 'Project', 'Visio')) {
+        $btn = Get-Ui ("Launch{0}Btn" -f $app)
+        if ($btn) { $btn.IsEnabled = ($installed -contains $app) }
+    }
+    if ($installed.Count -eq 0) {
+        Write-Log 'No Office applications detected. App launchers are disabled.' 'WARN'
+    } else {
+        Write-Log "Detected installed Office apps: $($installed -join ', ')" 'INFO'
+    }
+}
+
 function Show-ProductVersionDialog {
     <#
     .SYNOPSIS
@@ -2239,7 +2307,6 @@ function Start-Install {
     $arch = Get-SelectedArchitecture
     $channel = Get-SelectedChannel
     $editionId = Get-SelectedEditionId
-    $version = Get-SelectedVersion
 
     # Validate the offline source BEFORE building the config. If the user asked
     # for an offline install but the folder is missing/invalid, abort rather than
@@ -2247,13 +2314,15 @@ function Start-Install {
     $offlinePath = Get-OfflineSourcePath
     if ($offlinePath -eq 'INVALID') { return }
 
+    # Note: a product version is only pinned for offline downloads; an online
+    # install uses the channel's default/latest version, so no <Version> is set.
     if ($useIndividual) {
         if (-not (Test-VolumeChannelMismatch)) { return }
         $apps = Get-SelectedIndividualApps
-        $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -IndividualApps $apps -UseIndividualApps -SourcePath $offlinePath -Version $version
+        $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -IndividualApps $apps -UseIndividualApps -SourcePath $offlinePath
     } else {
         $excluded = Get-ExcludedApps
-        $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -ExcludedApps $excluded -SourcePath $offlinePath -Version $version
+        $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -ExcludedApps $excluded -SourcePath $offlinePath
     }
 
     if (-not $config) { return }
@@ -2534,22 +2603,19 @@ function Wire-Events {
         Update-ButtonStates
     })
 
-    # --- Main Window: Product Version selector + Channel info ---
+    # --- Main Window: Channel info ---
+    (Get-Ui 'ChannelInfoBtn').Add_Click({ Show-ChannelInfoDialog })
+
+    # --- Download: Product Version (offline packages are version-specific) ---
+    (Get-Ui 'DownloadVersionCombo').Add_SelectionChanged({
+        if ($script:SyncingVersion) { return }
+        $item = $this.SelectedItem
+        if ($item) { $script:SelectedVersion = $item.Tag }
+    })
     (Get-Ui 'VersionSelectBtn').Add_Click({
         $v = Show-ProductVersionDialog
-        if ($v) {
-            # Reflect the chosen version in both version combos.
-            $installVer = Get-Ui 'InstallVersionCombo'
-            $downloadVer = Get-Ui 'DownloadVersionCombo'
-            foreach ($combo in @($installVer, $downloadVer)) {
-                foreach ($item in $combo.Items) {
-                    if ($item.Tag -eq $v) { $combo.SelectedItem = $item; break }
-                }
-            }
-            Write-Log "Product version set to $v" 'INFO'
-        }
+        if ($v) { Set-SelectedVersion -Version $v; Write-Log "Product version set to $v" 'INFO' }
     })
-    (Get-Ui 'ChannelInfoBtn').Add_Click({ Show-ChannelInfoDialog })
 
     # --- Action buttons ---
     (Get-Ui 'InstallBtn').Add_Click({ Start-Install })
@@ -2570,6 +2636,12 @@ function Wire-Events {
     (Get-Ui 'CheckOdtBtn').Add_Click({ Check-Odt })
     (Get-Ui 'OpenLogFolderBtn').Add_Click({ Open-LogFolder })
     (Get-Ui 'OpenDownloadFolderBtn').Add_Click({ Open-DownloadFolder })
+
+    # Refresh app-launcher availability whenever the Utilities tab is shown.
+    (Get-Ui 'MainTabs').Add_SelectionChanged({
+        $tab = $this.SelectedItem
+        if ($tab -and $tab.Header -eq 'Utilities and Settings') { Update-UtilityButtons }
+    })
 
     # --- About tab ---
     (Get-Ui 'OdtDocsLink').Add_Click({ Start-Process $script:OdtDocsUrl })
@@ -2593,18 +2665,8 @@ function Wire-Events {
         Update-ButtonStates
     })
 
-    $installChannel = Get-Ui 'InstallChannelCombo'
-    $downloadChannel = Get-Ui 'DownloadChannelCombo'
-    $installChannel.Add_SelectionChanged({
-        if ($script:SyncingChannel) { return }
-        $script:SyncingChannel = $true
-        try { (Get-Ui 'DownloadChannelCombo').SelectedIndex = $this.SelectedIndex } finally { $script:SyncingChannel = $false }
-    })
-    $downloadChannel.Add_SelectionChanged({
-        if ($script:SyncingChannel) { return }
-        $script:SyncingChannel = $true
-        try { (Get-Ui 'InstallChannelCombo').SelectedIndex = $this.SelectedIndex } finally { $script:SyncingChannel = $false }
-    })
+    # Channel is selected only on the Main Window; offline packages don't pick a
+    # channel, so the download uses the Main Window's channel selection.
 
     # Architecture: Install radios <-> Download combo.
     (Get-Ui 'InstallArch64Radio').Add_Checked({
@@ -2624,20 +2686,6 @@ function Wire-Events {
             if ($this.SelectedIndex -eq 1) { (Get-Ui 'InstallArch32Radio').IsChecked = $true }
             else { (Get-Ui 'InstallArch64Radio').IsChecked = $true }
         } finally { $script:SyncingArch = $false }
-    })
-
-    # Product Version: Install combo <-> Download combo.
-    $installVer = Get-Ui 'InstallVersionCombo'
-    $downloadVer = Get-Ui 'DownloadVersionCombo'
-    $installVer.Add_SelectionChanged({
-        if ($script:SyncingVersion) { return }
-        $script:SyncingVersion = $true
-        try { (Get-Ui 'DownloadVersionCombo').SelectedIndex = $this.SelectedIndex } finally { $script:SyncingVersion = $false }
-    })
-    $downloadVer.Add_SelectionChanged({
-        if ($script:SyncingVersion) { return }
-        $script:SyncingVersion = $true
-        try { (Get-Ui 'InstallVersionCombo').SelectedIndex = $this.SelectedIndex } finally { $script:SyncingVersion = $false }
     })
 
     # --- Window close: stop the timer and clean up the runspace ---
@@ -2702,8 +2750,6 @@ Populate-FamilyCombo (Get-Ui 'InstallFamilyCombo')
 Populate-EditionCombo (Get-Ui 'InstallEditionCombo') -FamilyName 'Microsoft 365'
 Populate-EditionCombo (Get-Ui 'DownloadEditionCombo') -FamilyName 'Microsoft 365'
 Populate-ChannelCombo (Get-Ui 'InstallChannelCombo')
-Populate-ChannelCombo (Get-Ui 'DownloadChannelCombo')
-Populate-VersionCombo (Get-Ui 'InstallVersionCombo')
 Populate-VersionCombo (Get-Ui 'DownloadVersionCombo')
 Populate-AppLists
 Populate-LanguageLists
@@ -2729,6 +2775,9 @@ Wire-Events
 
 # Apply validity gating to the action buttons (initial state).
 Update-ButtonStates
+
+# Enable only the app launchers for installed Office products.
+Update-UtilityButtons
 
 # Apply persisted theme.
 (Get-Ui 'DarkThemeCheck').IsChecked = $script:Settings.DarkTheme
