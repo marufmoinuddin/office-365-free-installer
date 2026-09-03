@@ -1137,7 +1137,14 @@ function Update-FromBackgroundJob {
     if ($script:Job.AsyncResult -and $script:Job.AsyncResult.IsCompleted) {
         $exitCode = 0
         try {
-            $exitCode = $script:Job.PowerShell.EndInvoke($script:Job.AsyncResult)
+            # EndInvoke returns a PSDataCollection of the script's output, NOT a
+            # scalar. Comparing the collection directly (e.g. $exitCode -eq 0)
+            # yields the element 0, and [bool]0 is $false — which would wrongly
+            # report success as failure. Extract the first output value instead.
+            $result = $script:Job.PowerShell.EndInvoke($script:Job.AsyncResult)
+            if ($result -and $result.Count -gt 0) {
+                $exitCode = [int]$result[0]
+            }
         } catch {
             Add-ConsoleLine "Background job error: $($_.Exception.Message)" 'ERROR'
         }
