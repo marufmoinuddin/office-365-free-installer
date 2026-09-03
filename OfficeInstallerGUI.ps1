@@ -565,52 +565,24 @@ function Confirm-Elevation {
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Get-RepoOdtUrl {
-    <#
-    .SYNOPSIS
-        Returns the ODT download URL maintained in the repo by the
-        update-odt.yml workflow (tools/odt-url.txt), or $null if unavailable.
-    .DESCRIPTION
-        This is a fallback for when live resolution from Microsoft's download
-        page fails (e.g. the page structure changed or the page is unreachable).
-        The URL is still a download.microsoft.com link — the workflow only keeps
-        the current one fresh so we never depend on a stale hardcoded URL.
-    #>
-    try {
-        $content = (Invoke-WebRequest -Uri $script:OdtUrlFile -UseBasicParsing -TimeoutSec 15).Content
-        $url = ($content -split "\r?\n")[0].Trim()
-        if ($url -match '^https://download\.microsoft\.com/.*\.exe$') { return $url }
-    } catch { }
-    return $null
-}
+# ODT acquisition logic, defined once as a scriptblock so both the main-thread
+# Get-OdtSetupExe function and the background runspace can share it. It is fully
+# self-contained (no references to script-scope variables or UI) so it can run
+# inside a background runspace — this keeps the WPF window responsive while the
+# ODT installer is downloaded and extracted.
+$script:OdtAcquireScript = {
+    param($OdtCacheDir, $OdtDownloadPage, $OdtUrlFile, $Queue, [switch]$Force)
+    # Returns the full path to setup.exe, or $null on failure.
+    function Write-JobLine { param([string]$Line) $Queue.Enqueue($Line) }
 
-function Get-OdtSetupExe {
-    <#
-    .SYNOPSIS
-        Returns the full path to the ODT setup.exe, downloading it if needed.
-    .DESCRIPTION
-        Checks the local cache folder for setup.exe. If absent (or -Force), it
-        builds a list of candidate installer URLs — resolved live from
-        Microsoft's official download page (id=49117), then the repo-maintained
-        fallback (tools/odt-url.txt) — and tries each (with a retry) until one
-        downloads successfully. The self-extracting installer is then unpacked
-        with its own /extract:<path> switch to obtain setup.exe.
-    .PARAMETER Force
-        Re-download even if a cached copy exists.
-    .RETURNS
-        Full path to setup.exe, or $null on failure (errors are logged, never
-        silently swallowed).
-    #>
-    param([switch]$Force)
-
-    $setupExe = Join-Path $script:OdtCacheDir 'setup.exe'
+    $setupExe = Join-Path $OdtCacheDir 'setup.exe'
 
     if (-not $Force -and (Test-Path $setupExe) -and (Get-Item $setupExe).Length -gt 1MB) {
-        Write-Log "Using cached setup.exe: $setupExe" 'INFO'
+        Write-JobLine "Using cached setup.exe: $setupExe"
         return $setupExe
     }
 
-    Write-Log 'Downloading the Office Deployment Tool from Microsoft...' 'INFO'
+    Write-JobLine 'Downloading the Office Deployment Tool from Microsoft...'
 
     # --- Build the candidate installer URL list, tried in order ---
     $candidates = @()
@@ -619,33 +591,35 @@ function Get-OdtSetupExe {
     #    embeds a direct href to download.microsoft.com — we parse it out rather
     #    than hardcoding a versioned URL that goes stale.
     try {
-        $page = Invoke-WebRequest -Uri $script:OdtDownloadPage -UseBasicParsing -TimeoutSec 30
+        $page = Invoke-WebRequest -Uri $OdtDownloadPage -UseBasicParsing -TimeoutSec 30
         $match = [regex]::Match($page.Content, 'href="(https://download\.microsoft\.com/[^"]+\.exe)"')
         if ($match.Success) {
             $candidates += $match.Groups[1].Value
         } else {
-            Write-Log 'Could not locate the ODT download link on the Microsoft download page.' 'WARN'
+            Write-JobLine 'Could not locate the ODT download link on the Microsoft download page.'
         }
     } catch {
-        Write-Log "Could not reach the ODT download page: $($_.Exception.Message)" 'WARN'
+        Write-JobLine "Could not reach the ODT download page: $($_.Exception.Message)"
     }
 
     # 2. Repo-maintained fallback URL (kept fresh by the update-odt.yml workflow).
-    $repoUrl = Get-RepoOdtUrl
-    if ($repoUrl) {
-        $candidates += $repoUrl
-    }
+    try {
+        $content = (Invoke-WebRequest -Uri $OdtUrlFile -UseBasicParsing -TimeoutSec 15).Content
+        $url = ($content -split "\r?\n")[0].Trim()
+        if ($url -match '^https://download\.microsoft\.com/.*\.exe$') { $candidates += $url }
+    } catch { }
 
     $candidates = @($candidates | Select-Object -Unique)
     if ($candidates.Count -eq 0) {
-        Write-Log 'Could not determine the ODT download URL from Microsoft or the repo fallback.' 'ERROR'
+        Write-JobLine 'Could not determine the ODT download URL from Microsoft or the repo fallback.'
         return $null
     }
 
     # --- Try each candidate (with one retry for transient network/DNS failures) ---
+    $installerPath = $null
     foreach ($installerUrl in $candidates) {
         for ($attempt = 1; $attempt -le 2; $attempt++) {
-            Write-Log "Trying ODT installer URL (attempt $attempt/2): $installerUrl" 'INFO'
+            Write-JobLine "Trying ODT installer URL (attempt $attempt/2): $installerUrl"
             $installerPath = Join-Path $env:TEMP 'odt-installer.exe'
             try {
                 Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing -TimeoutSec 120
@@ -654,7 +628,7 @@ function Get-OdtSetupExe {
                 }
                 break   # download succeeded
             } catch {
-                Write-Log "Download failed: $($_.Exception.Message)" 'WARN'
+                Write-JobLine "Download failed: $($_.Exception.Message)"
                 Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
                 if ($attempt -eq 2) { $installerPath = $null }
             }
@@ -665,7 +639,7 @@ function Get-OdtSetupExe {
     }
 
     if (-not $installerPath -or -not (Test-Path $installerPath)) {
-        Write-Log 'All ODT download sources failed. Check your internet connection and DNS, or download the ODT manually and place setup.exe in the cache folder.' 'ERROR'
+        Write-JobLine 'All ODT download sources failed. Check your internet connection and DNS, or download the ODT manually and place setup.exe in the cache folder.'
         return $null
     }
 
@@ -673,7 +647,7 @@ function Get-OdtSetupExe {
     try {
         # The ODT downloader is a self-extracting archive. /extract:<path> pulls
         # out setup.exe (plus configuration.xml etc.) without installing anything.
-        $extractDir = Join-Path $script:OdtCacheDir 'extract'
+        $extractDir = Join-Path $OdtCacheDir 'extract'
         New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
         $p = Start-Process -FilePath $installerPath -ArgumentList @("/extract:`"$extractDir`"") -Wait -PassThru -NoNewWindow
         if ($p.ExitCode -ne 0) {
@@ -686,13 +660,35 @@ function Get-OdtSetupExe {
         }
         Copy-Item -Path $extracted -Destination $setupExe -Force
         Remove-Item -Path $installerPath -Force -ErrorAction SilentlyContinue
-        Write-Log "setup.exe ready: $setupExe" 'OK'
-        Update-OdtVersionLabel
+        Write-JobLine "setup.exe ready: $setupExe"
         return $setupExe
     } catch {
-        Write-Log "Failed to obtain the Office Deployment Tool: $($_.Exception.Message)" 'ERROR'
+        Write-JobLine "Failed to obtain the Office Deployment Tool: $($_.Exception.Message)"
         return $null
     }
+}
+
+function Get-OdtSetupExe {
+    <#
+    .SYNOPSIS
+        Returns the full path to the ODT setup.exe, downloading it if needed.
+    .DESCRIPTION
+        Main-thread wrapper around $script:OdtAcquireScript. It is kept as a
+        named function for the spec; at runtime the background runspace calls
+        OdtAcquireScript directly so the UI never freezes during the download.
+    .PARAMETER Force
+        Re-download even if a cached copy exists.
+    .RETURNS
+        Full path to setup.exe, or $null on failure (errors are logged, never
+        silently swallowed).
+    #>
+    param([switch]$Force)
+    $queue = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+    $result = & $script:OdtAcquireScript $script:OdtCacheDir $script:OdtDownloadPage $script:OdtUrlFile $queue -Force:$Force
+    $line = $null
+    while ($queue.TryDequeue([ref]$line)) { Add-ConsoleLine $line 'INFO' }
+    if ($result) { Update-OdtVersionLabel }
+    return $result
 }
 
 function New-OdtConfigXml {
@@ -1010,11 +1006,22 @@ function Update-OdtVersionLabel {
 # ============================================================================
 
 # Scriptblock run in the background runspace for ODT configure/download actions.
+# It first ensures setup.exe is available (downloading + extracting it if needed)
+# and then runs setup.exe — the whole operation stays off the UI thread.
 $script:OdtJobScript = {
-    param($SetupExe, $ConfigPath, $Mode, $Queue)
+    param($OdtAcquire, $ConfigPath, $Mode, $OdtCacheDir, $OdtDownloadPage, $OdtUrlFile, $Queue)
     function Write-JobLine { param([string]$Line) $Queue.Enqueue($Line) }
+
+    # 1. Ensure setup.exe is present (downloads + extracts if needed).
+    $setupExe = & $OdtAcquire $OdtCacheDir $OdtDownloadPage $OdtUrlFile $Queue
+    if (-not $setupExe) {
+        Write-JobLine 'Aborting: could not obtain setup.exe.'
+        return 1
+    }
+
+    # 2. Run setup.exe.
     Write-JobLine "Launching setup.exe /$Mode ..."
-    $p = Start-Process -FilePath $SetupExe -ArgumentList @("/$Mode", "`"$ConfigPath`"") -Wait -PassThru -NoNewWindow
+    $p = Start-Process -FilePath $setupExe -ArgumentList @("/$Mode", "`"$ConfigPath`"") -Wait -PassThru -NoNewWindow
     Write-JobLine "setup.exe finished with exit code $($p.ExitCode)."
     return $p.ExitCode
 }
@@ -1156,6 +1163,12 @@ function Update-FromBackgroundJob {
 
         Set-UiBusy $false
 
+        # If the job downloaded setup.exe, refresh the ODT version label now.
+        Update-OdtVersionLabel
+
+        # Re-apply validity gating to the action buttons.
+        Update-ButtonStates
+
         switch ($kind) {
             'install' {
                 if ($exitCode -eq 0) {
@@ -1276,7 +1289,8 @@ function Populate-YearCombo {
 function New-AppCheckbox {
     <#
     .SYNOPSIS
-        Creates a themed CheckBox for the app lists.
+        Creates a themed CheckBox for the app lists. Toggling it re-evaluates the
+        Install/Download button validity (e.g. no individual app selected).
     #>
     param([string]$Name, [string]$Id, [bool]$Checked)
     $cb = New-Object System.Windows.Controls.CheckBox
@@ -1285,6 +1299,8 @@ function New-AppCheckbox {
     $cb.Margin = New-Object System.Windows.Thickness(4, 2, 4, 2)
     $cb.IsChecked = $Checked
     $cb.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'TextForeground')
+    $cb.Add_Checked({ Update-ButtonStates })
+    $cb.Add_Unchecked({ Update-ButtonStates })
     return $cb
 }
 
@@ -1320,8 +1336,8 @@ function New-LanguageCheckbox {
     $cb.Margin = New-Object System.Windows.Thickness(4, 2, 4, 2)
     $cb.IsChecked = $Checked
     $cb.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'TextForeground')
-    $cb.Add_Checked({ Sync-LanguageLists })
-    $cb.Add_Unchecked({ Sync-LanguageLists })
+    $cb.Add_Checked({ Sync-LanguageLists; Update-ButtonStates })
+    $cb.Add_Unchecked({ Sync-LanguageLists; Update-ButtonStates })
     return $cb
 }
 
@@ -1438,6 +1454,35 @@ function Get-SelectedIndividualApps {
     return $result
 }
 
+function Update-ButtonStates {
+    <#
+    .SYNOPSIS
+        Enables/disables the Install and Download buttons based on whether the
+        current selections are valid (at least one language, and at least one
+        product/app selected). Skipped while a background job is running so it
+        never fights Set-UiBusy.
+    #>
+    if ($script:Job.Running) { return }
+
+    $languages = Get-SelectedLanguages
+    $hasLanguage = ($languages.Count -gt 0)
+
+    $useIndividual = (Get-Ui 'InstallIndividualCheck').IsChecked
+    $hasProduct = $false
+    if ($useIndividual) {
+        $hasProduct = ((Get-SelectedIndividualApps).Count -gt 0)
+    } else {
+        $hasProduct = (-not [string]::IsNullOrWhiteSpace((Get-SelectedEditionId)))
+    }
+
+    $installBtn = Get-Ui 'InstallBtn'
+    if ($installBtn) { $installBtn.IsEnabled = ($hasLanguage -and $hasProduct) }
+
+    # Download always uses suite mode (edition + languages).
+    $downloadBtn = Get-Ui 'DownloadBtn'
+    if ($downloadBtn) { $downloadBtn.IsEnabled = $hasLanguage }
+}
+
 function Test-VolumeChannelMismatch {
     <#
     .SYNOPSIS
@@ -1473,13 +1518,19 @@ function Start-Install {
     $channel = Get-SelectedChannel
     $editionId = Get-SelectedEditionId
 
+    # Validate the offline source BEFORE building the config. If the user asked
+    # for an offline install but the folder is missing/invalid, abort rather than
+    # silently falling back to an online install.
+    $offlinePath = Get-OfflineSourcePath
+    if ($offlinePath -eq 'INVALID') { return }
+
     if ($useIndividual) {
         if (-not (Test-VolumeChannelMismatch)) { return }
         $apps = Get-SelectedIndividualApps
-        $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -IndividualApps $apps -UseIndividualApps -SourcePath (Get-OfflineSourcePath)
+        $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -IndividualApps $apps -UseIndividualApps -SourcePath $offlinePath
     } else {
         $excluded = Get-ExcludedApps
-        $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -ExcludedApps $excluded -SourcePath (Get-OfflineSourcePath)
+        $config = New-OdtConfigXml -EditionId $editionId -Architecture $arch -Channel $channel -Languages $languages -ExcludedApps $excluded -SourcePath $offlinePath
     }
 
     if (-not $config) { return }
@@ -1511,16 +1562,16 @@ function Start-InstallFromConfig {
     .SYNOPSIS
         Runs setup.exe /configure against an existing config file (used by the
         Install button when already elevated, and by the elevated relaunch).
+        ODT acquisition (download/extract) and setup.exe both run in the
+        background runspace so the UI never freezes.
     #>
     param([string]$ConfigPath)
     if (-not (Test-Path $ConfigPath)) {
         Write-Log "Config not found: $ConfigPath" 'ERROR'
         return
     }
-    $setupExe = Get-OdtSetupExe
-    if (-not $setupExe) { return }
     Set-UiBusy $true
-    Start-BackgroundJob -Kind 'install' -Script $script:OdtJobScript -Arguments @($setupExe, $ConfigPath, 'configure') -OdtLogDir $script:OdtLogDir
+    Start-BackgroundJob -Kind 'install' -Script $script:OdtJobScript -Arguments @($script:OdtAcquireScript, $ConfigPath, 'configure', $script:OdtCacheDir, $script:OdtDownloadPage, $script:OdtUrlFile) -OdtLogDir $script:OdtLogDir
 }
 
 function Start-Uninstall {
@@ -1558,36 +1609,37 @@ function Start-UninstallFromConfig {
     <#
     .SYNOPSIS
         Runs setup.exe /configure against a Remove config (used when already
-        elevated, and by the elevated relaunch).
+        elevated, and by the elevated relaunch). ODT acquisition and setup.exe
+        both run in the background runspace so the UI never freezes.
     #>
     param([string]$ConfigPath)
     if (-not (Test-Path $ConfigPath)) {
         Write-Log "Config not found: $ConfigPath" 'ERROR'
         return
     }
-    $setupExe = Get-OdtSetupExe
-    if (-not $setupExe) { return }
     Set-UiBusy $true
-    Start-BackgroundJob -Kind 'uninstall' -Script $script:OdtJobScript -Arguments @($setupExe, $ConfigPath, 'configure') -OdtLogDir $script:OdtLogDir
+    Start-BackgroundJob -Kind 'uninstall' -Script $script:OdtJobScript -Arguments @($script:OdtAcquireScript, $ConfigPath, 'configure', $script:OdtCacheDir, $script:OdtDownloadPage, $script:OdtUrlFile) -OdtLogDir $script:OdtLogDir
 }
 
 function Get-OfflineSourcePath {
     <#
     .SYNOPSIS
-        Returns the offline source folder if the "Use offline source" checkbox is
-        checked and a folder is entered, otherwise $null.
+        Returns the offline source folder, or $null if offline source is not
+        requested. If offline source IS requested but the folder is missing or
+        invalid, logs an error and returns the sentinel 'INVALID' so the caller
+        aborts instead of silently falling back to an online install.
     #>
     $check = Get-Ui 'InstallOfflineCheck'
     if (-not $check -or -not $check.IsChecked) { return $null }
     $box = Get-Ui 'InstallOfflinePathBox'
     $path = $box.Text.Trim()
     if ([string]::IsNullOrWhiteSpace($path)) {
-        Write-Log 'Offline source is checked but no folder was entered.' 'WARN'
-        return $null
+        Write-Log 'Offline source is checked but no folder was entered. Aborting the install.' 'ERROR'
+        return 'INVALID'
     }
     if (-not (Test-Path $path)) {
-        Write-Log "Offline source folder does not exist: $path" 'WARN'
-        return $null
+        Write-Log "Offline source folder does not exist: $path. Aborting the install." 'ERROR'
+        return 'INVALID'
     }
     return $path
 }
@@ -1631,12 +1683,9 @@ function Start-Download {
     $config | Set-Content -Path $configPath -Encoding UTF8
     Write-Log "Download config written to $configPath" 'INFO'
 
-    $setupExe = Get-OdtSetupExe
-    if (-not $setupExe) { return }
-
     $script:LastDownloadDest = $dest
     Set-UiBusy $true
-    Start-BackgroundJob -Kind 'download' -Script $script:OdtJobScript -Arguments @($setupExe, $configPath, 'download') -OdtLogDir $script:OdtLogDir
+    Start-BackgroundJob -Kind 'download' -Script $script:OdtJobScript -Arguments @($script:OdtAcquireScript, $configPath, 'download', $script:OdtCacheDir, $script:OdtDownloadPage, $script:OdtUrlFile) -OdtLogDir $script:OdtLogDir
 }
 
 function Start-CreateIso {
@@ -1742,12 +1791,14 @@ function Wire-Events {
         (Get-Ui 'SuiteAppsBorder').Visibility = 'Collapsed'
         (Get-Ui 'YearSelectorPanel').Visibility = 'Visible'
         (Get-Ui 'AppsLabel').Text = 'Individual apps to install'
+        Update-ButtonStates
     })
     (Get-Ui 'InstallIndividualCheck').Add_Unchecked({
         (Get-Ui 'IndividualAppsBorder').Visibility = 'Collapsed'
         (Get-Ui 'SuiteAppsBorder').Visibility = 'Visible'
         (Get-Ui 'YearSelectorPanel').Visibility = 'Collapsed'
         (Get-Ui 'AppsLabel').Text = 'Applications (uncheck to exclude from the suite)'
+        Update-ButtonStates
     })
 
     # --- Install tab: offline source toggle ---
@@ -1784,11 +1835,13 @@ function Wire-Events {
         if ($script:SyncingEdition) { return }
         $script:SyncingEdition = $true
         try { (Get-Ui 'DownloadEditionCombo').SelectedIndex = $this.SelectedIndex } finally { $script:SyncingEdition = $false }
+        Update-ButtonStates
     })
     $downloadEdition.Add_SelectionChanged({
         if ($script:SyncingEdition) { return }
         $script:SyncingEdition = $true
         try { (Get-Ui 'InstallEditionCombo').SelectedIndex = $this.SelectedIndex } finally { $script:SyncingEdition = $false }
+        Update-ButtonStates
     })
 
     $installChannel = Get-Ui 'InstallChannelCombo'
@@ -1885,6 +1938,9 @@ Populate-LanguageLists
 
 # Wire events.
 Wire-Events
+
+# Apply validity gating to the action buttons (initial state).
+Update-ButtonStates
 
 # Apply persisted theme.
 (Get-Ui 'DarkThemeCheck').IsChecked = $script:Settings.DarkTheme
