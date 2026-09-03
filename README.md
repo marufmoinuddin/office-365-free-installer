@@ -1,110 +1,111 @@
-# Office Installer
+# Office Installer GUI
 
-A clean, ODT-based installer for **Microsoft Office 365 / 2019** for Windows.
+A Windows desktop GUI — written entirely in **PowerShell + WPF** — that is a
+front-end for Microsoft's official **Office Deployment Tool (ODT)**.
 
-This project wraps Microsoft's official **Office Deployment Tool (ODT)** with a
-simple menu-driven PowerShell script. It downloads the latest ODT automatically,
-detects your system architecture, and installs Office from the Microsoft CDN.
+The GUI's only job is to generate a valid ODT `configuration.xml` and call
+`setup.exe` with the correct switches. It does **not** perform any licensing,
+activation, or license-conversion logic. All Office files come directly from
+Microsoft's CDN when you click Download or Install.
 
 > **Note:** This tool installs Office using the official Office Deployment Tool.
 > You are responsible for having a valid license for the products you install.
 
 ## Features
 
-- ✅ One-click menu-driven installer (`install.ps1`)
-- ✅ One-line install via `irm | iex` — menu shows instantly, files fetched on demand
-- ✅ Auto-updating ODT download URL (GitHub Actions workflow)
-- ✅ Auto-downloads the latest Office Deployment Tool (no bundled binaries)
-- ✅ Auto-detects 64-bit / 32-bit architecture
-- ✅ Full, Minimal, Office 2019 Enterprise, and Visio + Project presets
-- ✅ Uninstall and cleanup (Microsoft's official OffScrub scripts)
-- ✅ Full logging to `%TEMP%\OfficeInstaller`
-- ✅ Self-elevates to administrator automatically
+- ✅ Tabbed WPF GUI (`OfficeInstallerGUI.ps1` + `MainWindow.xaml`)
+- ✅ Install / Uninstall Office via `setup.exe /configure`
+- ✅ Download an offline source package via `setup.exe /download`
+- ✅ Create an ISO from a downloaded source (IMAPI2, or `oscdimg` from the ADK)
+- ✅ Read-only "Check Installed Status" (registry query, no changes)
+- ✅ Dark / light theme toggle that persists across restarts
+- ✅ Live console panel showing ODT's own log output as it streams
+- ✅ Long-running operations run off the UI thread — the window never freezes
+- ✅ Elevation (UAC) is only requested when Install/Uninstall is clicked
+- ✅ No external modules, no NuGet, no telemetry
 
 ## Requirements
 
-- Windows 10 / 11 (Windows 7 SP1+ also works)
-- PowerShell 3.0+ (built into Windows)
-- Internet connection (to download the ODT and Office files)
-- Administrator privileges (requested automatically)
+- Windows 10 / 11
+- PowerShell 5.1+ (built into Windows) and .NET Framework (WPF, already present)
+- Internet connection (to download the ODT and Office files from Microsoft)
+- Administrator privileges (requested automatically, only when needed)
 
 ## Quick Start
 
-### Option A — One-line install (recommended)
+### Option A — One-line launch (no cloning)
 
 Open **PowerShell** and run:
 
 ```powershell
-irm https://raw.githubusercontent.com/marufmoinuddin/office-365-free-installer/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/marufmoinuddin/office-365-free-installer/main/bootstrap.ps1 | iex
 ```
 
-The script shows the menu instantly and downloads only the files you choose.
+This downloads `OfficeInstallerGUI.ps1` and `MainWindow.xaml` into
+`%LOCALAPPDATA%\OfficeInstallerGUI\app` and launches the GUI from there. No
+administrator rights are needed to launch it — the GUI requests elevation only
+when you click Install/Uninstall.
 
 ### Option B — From the repository
 
 1. Download or clone this repository.
-2. Right-click **`install.ps1`** → **Run with PowerShell** (or run it from a terminal).
-3. Accept the UAC prompt.
-4. Choose an option from the menu.
+2. Double-click **`OfficeInstallerGUI.ps1`** (or right-click → **Run with
+   PowerShell**).
+3. Use the **Install** tab to pick an edition, architecture, channel, languages
+   and apps, then click **Install Office**.
+4. Use the **Download / Offline Package** tab to fetch an offline source and
+   optionally build an ISO from it.
 
-## Usage
+> `MainWindow.xaml` must stay in the same folder as `OfficeInstallerGUI.ps1`.
+> If it's missing, the script falls back to an identical inline copy.
 
-| Option | Description |
-|--------|-------------|
-| 1. Install Office 365 – Full | Word, Excel, PowerPoint, Outlook, OneNote, Access, Publisher |
-| 2. Install Office 365 – Minimal | Word, Excel, PowerPoint only |
-| 3. Install Office 365 – Custom | Pick apps yourself — toggle with numbers (e.g. `1 2 3 4`) |
-| 4. Install Office 2019 Enterprise | ProPlus + Visio + Project (volume license) |
-| 5. Install Visio + Project | Adds Visio/Project to an existing Office 365 install |
-| 6. Uninstall Office | Removes all Click-to-Run Office products |
-| 7. Clean up leftovers | Microsoft's official OffScrub scripts |
-| 8. Download / Update ODT | Fetches the latest Office Deployment Tool |
-| 9. Exit | — |
+## The three tabs
+
+### Install
+- **Edition** — Microsoft 365 Apps for enterprise/business, Office LTSC
+  2021/2024 (Volume), Office 2019 (Volume).
+- **Architecture** — 64-bit (x64) or 32-bit (x86).
+- **Individual apps** — toggle to install standalone products (Word, Excel,
+  Project, Visio, OneDrive, …) instead of a full suite. A year selector picks
+  the 2019/2021 Project/Visio volume IDs.
+- **Applications** — suite mode: uncheck apps to emit `<ExcludeApp>` entries.
+  Teams, Lync and Groove are unchecked by default (they're separate/legacy
+  installs).
+- **Channel** — the seven official ODT channel values.
+- **Languages** — multi-select list; `en-US` is checked by default.
+- **Use offline source** — install from a folder you downloaded on the
+  Download tab (adds `SourcePath` to the config).
+- **Install Office / Uninstall Office / Check Installed Status**.
+
+### Download / Offline Package
+- Same edition / architecture / channel / language selections as the Install
+  tab (kept in sync automatically).
+- **Destination folder** for the downloaded source files.
+- **Download Office (offline source)** — runs `setup.exe /download`.
+- **Create ISO from downloaded source** — enabled after a successful download.
+- **Console** — live, auto-scrolling log of ODT's output.
+
+### About / Settings
+- App description and a link to the official ODT documentation.
+- Local paths where `setup.exe` and logs are cached.
+- Optional (hidden by default) **KMS host activation** section for
+  organizations that run their own KMS host under a real Volume Licensing
+  agreement — it only calls Microsoft's own `ospp.vbs`; it does not inject
+  keys or convert channels.
 
 ## How it works
 
-1. `install.ps1` shows the menu instantly — nothing is downloaded up front.
-2. It checks for administrator rights and elevates if needed.
-3. It detects whether your system is 64-bit or 32-bit.
-4. Only after you pick an option, it downloads what's needed:
-   - the matching config from `config/` (or generates one for Custom),
-   - the Office Deployment Tool (`tools\setup.exe`) if missing — the download
-     URL is kept current by a GitHub Actions workflow (`tools/odt-url.txt`),
-     with a mirror and a pinned link as fallbacks,
-   - the OffScrub script only if you choose cleanup.
-5. It runs `setup.exe /configure <config>.xml`.
-6. Office is downloaded from the Microsoft CDN and installed.
-
-## Keeping the ODT up to date
-
-The direct Microsoft download link for the ODT changes with every release, and
-Microsoft's download page blocks plain HTTP clients and vanilla headless
-browsers. To stay current automatically, this repo includes a GitHub Actions
-workflow (`.github/workflows/update-odt.yml`) that runs weekly:
-
-1. It opens the Microsoft download page with Camoufox (a stealth Firefox build).
-2. It extracts the latest `officedeploymenttool_*.exe` URL.
-3. If that fails, it falls back to GitHub code search for the newest URL.
-4. It commits that URL to `tools/odt-url.txt`.
-
-The installer reads `tools/odt-url.txt` first, then falls back to a GitHub
-mirror and a pinned link. You can also run the workflow manually from the
-**Actions** tab.
-
-## Configuration files
-
-| File | Purpose |
-|------|---------|
-| `config/office365-full.xml` | Full Office 365 suite (64-bit) |
-| `config/office365-minimal.xml` | Word/Excel/PowerPoint only (64-bit) |
-| `config/office365-x86-full.xml` | Full Office 365 suite (32-bit) |
-| `config/office365-x86-minimal.xml` | Word/Excel/PowerPoint only (32-bit) |
-| `config/office2019-enterprise.xml` | Office 2019 ProPlus + Visio + Project (volume) |
-| `config/visio-project.xml` | Visio + Project for Office 365 |
-| `config/uninstall.xml` | Remove all Click-to-Run Office products |
-
-You can edit these files to change channels, languages, or excluded apps.
-See the [official ODT documentation](https://learn.microsoft.com/en-us/deployoffice/office-deployment-tool-configuration-options) for all options.
+1. `OfficeInstallerGUI.ps1` loads `MainWindow.xaml` and shows the window.
+2. When you click an action, it builds a `configuration.xml` from your
+   selections using `[xml]` element creation (never string concatenation).
+3. It ensures the ODT `setup.exe` is present in
+   `%LOCALAPPDATA%\OfficeInstallerGUI\ODT`, downloading it from Microsoft's
+   official download page (`id=49117`) and extracting it with the ODT
+   installer's own `/extract:` switch if needed.
+4. It runs `setup.exe /configure <config>.xml` (install/uninstall) or
+   `setup.exe /download <config>.xml` (offline source) in a background
+   runspace, tailing ODT's own log under `%temp%\OfficeLogs` into the console.
+5. After a successful download you can build an ISO from the source folder.
 
 ## Troubleshooting
 
